@@ -1,4 +1,4 @@
-//! Consumer side: reads a RabbitMQ queue as a [`GlobalFeed`].
+//! Consumer side: reads a `RabbitMQ` queue as a [`GlobalFeed`].
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -8,7 +8,9 @@ use eventsource_core::envelope::{EventEnvelope, FeedReadOptions};
 use eventsource_core::error::{PositionError, StoreError};
 use eventsource_core::position::Position;
 use eventsource_core::store::GlobalFeed;
-use lapin::options::{BasicAckOptions, BasicGetOptions, ExchangeDeclareOptions, QueueBindOptions, QueueDeclareOptions};
+use lapin::options::{
+    BasicAckOptions, BasicGetOptions, ExchangeDeclareOptions, QueueBindOptions, QueueDeclareOptions,
+};
 use lapin::types::FieldTable;
 use lapin::{Channel, Connection, ConnectionProperties, ExchangeKind};
 
@@ -106,7 +108,9 @@ impl RabbitMqConsumer {
         let tags: Vec<u64> = {
             let mut state = self.state.lock().expect("state lock is not poisoned");
             let later = state.pending.split_off(&(position.token() + 1));
-            std::mem::replace(&mut state.pending, later).into_values().collect()
+            std::mem::replace(&mut state.pending, later)
+                .into_values()
+                .collect()
         };
         for tag in tags {
             self.channel
@@ -135,6 +139,11 @@ fn start_token() -> u64 {
     ms << 20
 }
 
+/// A queue cannot be filtered by tenant or category without consuming the rest.
+#[derive(Debug, thiserror::Error)]
+#[error("a RabbitMQ queue cannot be filtered by tenant or category; bind by routing key instead")]
+struct UnsupportedFilter;
+
 fn backend(error: impl std::error::Error + Send + Sync + 'static) -> StoreError {
     StoreError::Backend(Box::new(error))
 }
@@ -145,6 +154,9 @@ impl GlobalFeed for RabbitMqConsumer {
         from: Option<&Position>,
         options: FeedReadOptions,
     ) -> Result<Vec<EventEnvelope>, StoreError> {
+        if options.tenant_id.is_some() || options.category.is_some() {
+            return Err(backend(UnsupportedFilter));
+        }
         if let Some(position) = from {
             self.acknowledge_through(position).await?;
         }

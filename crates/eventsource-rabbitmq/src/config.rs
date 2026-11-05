@@ -1,4 +1,4 @@
-//! Settings for the RabbitMQ bus.
+//! Settings for the `RabbitMQ` bus.
 
 /// Where events are published and which queue a consumer reads.
 #[derive(Debug, Clone, PartialEq, Eq)]

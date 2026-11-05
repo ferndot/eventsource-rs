@@ -1,4 +1,4 @@
-//! [`EventPublisher`] that publishes envelopes to a RabbitMQ topic exchange.
+//! [`EventPublisher`] that publishes envelopes to a `RabbitMQ` topic exchange.
 
 use eventsource_core::bus::EventPublisher;
 use eventsource_core::envelope::EventEnvelope;
@@ -43,7 +43,9 @@ impl RabbitMqPublisher {
                 FieldTable::default(),
             )
             .await?;
-        channel.confirm_select(ConfirmSelectOptions::default()).await?;
+        channel
+            .confirm_select(ConfirmSelectOptions::default())
+            .await?;
         Ok((connection, channel))
     }
 

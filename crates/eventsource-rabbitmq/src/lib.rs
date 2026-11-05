@@ -1,4 +1,4 @@
-//! RabbitMQ adapter for the event bus: a publisher and a queue consumer.
+//! `RabbitMQ` adapter for the event bus: a publisher and a queue consumer.
 
 mod config;
 mod consumer;
