@@ -1,0 +1,24 @@
+[package]
+name = "eventsource-kafka"
+description = "Kafka event publisher and partition-ordered consumer for eventsource-core."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+eventsource-core = { path = "../eventsource-core" }
+chrono.workspace = true
+rdkafka.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[dev-dependencies]
+eventsource-memory = { path = "../eventsource-memory" }
+futures.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
