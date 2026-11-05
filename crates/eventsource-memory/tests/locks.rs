@@ -114,3 +114,54 @@ async fn another_owner_acquires_once_the_ttl_has_passed() {
         "the old owner cannot release the new lease"
     );
 }
+
+#[tokio::test]
+async fn renew_by_owner_extends_expiry_and_by_non_owner_is_refused() {
+    let (locks, clock) = store();
+    locks
+        .try_acquire(&name("relay"), &owner("a"), ttl(30))
+        .await
+        .expect("acquire");
+
+    clock.advance(Duration::from_secs(20));
+    let refused = locks
+        .renew(&name("relay"), &owner("b"), ttl(60))
+        .await
+        .expect("renew by stranger");
+    assert_eq!(refused, None);
+
+    let renewed = locks
+        .renew(&name("relay"), &owner("a"), ttl(60))
+        .await
+        .expect("renew")
+        .expect("owner may renew");
+    assert_eq!(renewed.expires_at(), clock.now() + Duration::from_secs(60));
+
+    // Past the original expiry (t=30) but inside the renewed one (t=80).
+    clock.advance(Duration::from_secs(40));
+    assert_eq!(
+        locks
+            .try_acquire(&name("relay"), &owner("b"), ttl(30))
+            .await
+            .expect("acquire"),
+        None,
+        "renewal keeps the lock held"
+    );
+
+    // Once expired, the old owner can no longer renew.
+    clock.advance(Duration::from_secs(20));
+    assert_eq!(
+        locks
+            .renew(&name("relay"), &owner("a"), ttl(60))
+            .await
+            .expect("renew expired"),
+        None
+    );
+    assert_eq!(
+        locks
+            .renew(&name("unknown"), &owner("a"), ttl(60))
+            .await
+            .expect("renew unheld"),
+        None
+    );
+}

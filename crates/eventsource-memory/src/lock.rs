@@ -72,10 +72,19 @@ impl<C: Clock> LockStore for InMemoryLockStore<C> {
 
     async fn renew(
         &self,
-        _name: &LockName,
-        _owner: &LockOwner,
-        _ttl: LockTtl,
+        name: &LockName,
+        owner: &LockOwner,
+        ttl: LockTtl,
     ) -> Result<Option<LockLease>, LockError> {
-        todo!("renew")
+        let now = self.clock.now();
+        let expires_at = self.expiry(ttl);
+        let mut leases = self.leases.lock().unwrap_or_else(PoisonError::into_inner);
+        match leases.get_mut(name.as_str()) {
+            Some((holder, until)) if holder == owner.as_str() && *until > now => {
+                *until = expires_at;
+                Ok(Some(LockLease::new(name.clone(), owner.clone(), expires_at)))
+            }
+            _ => Ok(None),
+        }
     }
 }
