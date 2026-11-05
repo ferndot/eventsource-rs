@@ -192,3 +192,64 @@ mod publish {
         assert!(publish.failure.is_some());
     }
 }
+
+mod privacy {
+    use std::sync::Arc;
+
+    use eventsource_core::bus::handler;
+    use eventsource_core::error::BackendError;
+    use eventsource_core::store::AggregateStore;
+    use eventsource_core::{
+        AggregateId, Category, EventEnvelope, ExpectedVersion, StreamId, StreamReadOptions,
+        SubscriptionConfig, SubscriptionRunner,
+    };
+    use eventsource_memory::{InMemoryCheckpointStore, InMemoryEventBus, InMemoryEventStore};
+    use eventsource_testing::{RecordingTracer, record};
+
+    const SENTINEL: &str = "SENTINEL-4f9c1e-do-not-trace";
+
+    #[tokio::test]
+    async fn recorded_attributes_never_include_event_payloads() {
+        let tracer = RecordingTracer::new();
+        let store = Arc::new(InMemoryEventStore::new().with_tracer(tracer.clone()));
+        let bus = Arc::new(InMemoryEventBus::new().with_tracer(tracer.clone()));
+        // The handler's own error text is payload-derived, so it must not leak either.
+        bus.subscribe_all(handler(|envelope: EventEnvelope| async move {
+            Err::<(), BackendError>(format!("bad payload {}", envelope.record.payload).into())
+        }));
+
+        let mut event = record("OrderPlaced");
+        event.payload = serde_json::json!({ "card": SENTINEL });
+        event.meta.actor_id = Some(SENTINEL.to_owned());
+        let stream = StreamId::new(
+            AggregateId::new(),
+            Category::new("Order").expect("category"),
+        );
+        store
+            .append(&stream, vec![event], ExpectedVersion::NoStream)
+            .await
+            .expect("append");
+        store
+            .read_stream(&stream, StreamReadOptions::default())
+            .await
+            .expect("load");
+        let mut config = SubscriptionConfig::new("payments");
+        config.retry.max_attempts = std::num::NonZeroU32::MIN;
+        let mut runner = SubscriptionRunner::new(
+            Arc::clone(&store),
+            InMemoryCheckpointStore::new(),
+            bus,
+            config,
+        )
+        .with_tracer(tracer.clone());
+        runner.run_until_caught_up().await.expect_err("handler fails");
+
+        let spans = tracer.spans();
+        assert!(spans.len() >= 4, "append, load, publish and page spans: {spans:?}");
+        let everything = format!("{spans:?}");
+        assert!(
+            !everything.contains(SENTINEL),
+            "payload leaked into telemetry: {everything}"
+        );
+    }
+}
