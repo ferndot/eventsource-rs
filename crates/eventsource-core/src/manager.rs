@@ -13,9 +13,10 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{mpsc, watch};
 
 use crate::bus::EventPublisher;
-use crate::checkpoint::CheckpointStore;
+use crate::checkpoint::{Checkpoint, CheckpointStore};
 use crate::dead_letter::DeadLetterStore;
 use crate::error::SubscriptionError;
+use crate::position::Position;
 use crate::store::GlobalFeed;
 use crate::subscription::{RunStats, SubscriptionRunner};
 use crate::telemetry::Tracer;
@@ -67,11 +68,29 @@ enum Control {
 }
 
 type RunFuture = BoxFuture<'static, Result<RunStats, SubscriptionError>>;
-type Factory = Box<dyn Fn(BoxFuture<'static, ()>) -> RunFuture + Send + Sync>;
+type Factory = Box<dyn Fn(BoxFuture<'static, ()>, ProgressSink) -> RunFuture + Send + Sync>;
+type ProgressSink = Arc<watch::Sender<Checkpoint>>;
 
 struct Entry {
     status: Arc<watch::Sender<SubscriptionStatus>>,
     control: watch::Sender<Control>,
+    progress: Arc<watch::Sender<Checkpoint>>,
+    last_error: Arc<Mutex<Option<String>>>,
+}
+
+/// A point-in-time view of one subscription, from [`SubscriptionManager::health`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubscriptionHealth {
+    /// The subscription's name.
+    pub name: String,
+    /// What it is doing now.
+    pub status: SubscriptionStatus,
+    /// The last checkpointed position; `None` before the first event.
+    pub last_position: Option<Position>,
+    /// Events processed in total, including before any restart.
+    pub events_processed: u64,
+    /// The most recent failure, kept after the subscription is restarted.
+    pub last_error: Option<String>,
 }
 
 struct Inner {
@@ -137,7 +156,12 @@ impl SubscriptionManager {
         if entries.contains_key(&name) {
             return Err(ManagerError::AlreadyRegistered(name));
         }
-        let factory: Factory = Box::new(move |stop| Box::pin(build().run(stop)));
+        let factory: Factory = Box::new(move |stop, progress: ProgressSink| {
+            let runner = build().with_progress(move |checkpoint| {
+                progress.send_replace(checkpoint.clone());
+            });
+            Box::pin(runner.run(stop))
+        });
         let tasks = self
             .inner
             .tasks
@@ -148,8 +172,24 @@ impl SubscriptionManager {
         };
         let status = Arc::new(watch::channel(SubscriptionStatus::Running).0);
         let (control, control_rx) = watch::channel(Control::Run);
-        let task = drive(factory, control_rx, Arc::clone(&status));
-        entries.insert(name, Entry { status, control });
+        let progress = Arc::new(watch::channel(Checkpoint::default()).0);
+        let last_error = Arc::new(Mutex::new(None));
+        let task = drive(
+            factory,
+            control_rx,
+            Arc::clone(&status),
+            Arc::clone(&progress),
+            Arc::clone(&last_error),
+        );
+        entries.insert(
+            name,
+            Entry {
+                status,
+                control,
+                progress,
+                last_error,
+            },
+        );
         // A dropped driver means nothing will ever run; the status stays as registered.
         let _ = tasks.send(Box::pin(task));
         Ok(())
@@ -201,6 +241,37 @@ impl SubscriptionManager {
             .get(name)
             .map(|entry| entry.status.borrow().clone())
             .ok_or_else(|| ManagerError::UnknownSubscription(name.to_owned()))
+    }
+
+    /// Status, last checkpoint, events processed and last error for `name`.
+    ///
+    /// The checkpoint and count are those of the runner's last saved page.
+    ///
+    /// # Errors
+    /// [`ManagerError::UnknownSubscription`] if `name` is not registered.
+    pub fn health(&self, name: &str) -> Result<SubscriptionHealth, ManagerError> {
+        let entries = self
+            .inner
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        lookup(&entries, name).map(|entry| snapshot(name, entry))
+    }
+
+    /// [`Self::health`] for every subscription, sorted by name.
+    #[must_use]
+    pub fn health_all(&self) -> Vec<SubscriptionHealth> {
+        let entries = self
+            .inner
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut all: Vec<_> = entries
+            .iter()
+            .map(|(name, entry)| snapshot(name, entry))
+            .collect();
+        all.sort_by(|a, b| a.name.cmp(&b.name));
+        all
     }
 
     /// Stops delivery for `name` after its current page. The checkpoint is kept.
@@ -263,6 +334,22 @@ fn lookup<'a>(entries: &'a HashMap<String, Entry>, name: &str) -> Result<&'a Ent
     entries
         .get(name)
         .ok_or_else(|| ManagerError::UnknownSubscription(name.to_owned()))
+}
+
+fn snapshot(name: &str, entry: &Entry) -> SubscriptionHealth {
+    let checkpoint = entry.progress.borrow().clone();
+    let last_error = entry
+        .last_error
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    SubscriptionHealth {
+        name: name.to_owned(),
+        status: entry.status.borrow().clone(),
+        last_position: checkpoint.position,
+        events_processed: checkpoint.events_processed,
+        last_error,
+    }
 }
 
 fn require(
@@ -334,17 +421,22 @@ async fn drive(
     factory: Factory,
     mut control: watch::Receiver<Control>,
     status: Arc<watch::Sender<SubscriptionStatus>>,
+    progress: ProgressSink,
+    last_error: Arc<Mutex<Option<String>>>,
 ) {
     loop {
         let wanted = *control.borrow_and_update();
         match wanted {
             Control::Run => {
                 status.send_replace(SubscriptionStatus::Running);
-                match factory(stop_signal(control.clone())).await {
+                match factory(stop_signal(control.clone()), Arc::clone(&progress)).await {
                     Ok(_) if *control.borrow() == Control::Run => return,
                     Ok(_) => {}
                     Err(error) => {
-                        status.send_replace(SubscriptionStatus::Failed(describe(&error)));
+                        let text = describe(&error);
+                        *last_error.lock().unwrap_or_else(PoisonError::into_inner) =
+                            Some(text.clone());
+                        status.send_replace(SubscriptionStatus::Failed(text));
                         // Stay failed until someone changes what the subscription should do.
                         if control.changed().await.is_err() {
                             return;
@@ -670,6 +762,9 @@ mod tests {
             text.contains("boom: disk on fire"),
             "error text was {text:?}"
         );
+        let health = manager.health("broken").unwrap();
+        assert_eq!(health.last_error.as_deref(), Some(text.as_str()));
+        assert_eq!(health.status, SubscriptionStatus::Failed(text.clone()));
         assert!(broken.tokens().is_empty());
         assert_eq!(
             checkpoints.get("broken"),
@@ -680,6 +775,51 @@ mod tests {
         feed.append(2);
         eventually(|| (healthy.tokens() == [1, 2, 3, 4]).then_some(())).await;
         assert_eq!(manager.status("healthy"), Ok(SubscriptionStatus::Running));
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn health_reports_events_processed_and_the_last_checkpoint_position() {
+        let (manager, driver) = SubscriptionManager::new();
+        let driver = tokio::spawn(driver.run());
+        let feed = Feed::default();
+        feed.append(5);
+        let (checkpoints, sink_a, sink_b) =
+            (Checkpoints::default(), Sink::default(), Sink::default());
+        register(&manager, "alpha", &feed, &checkpoints, &sink_a);
+        register(&manager, "beta", &feed, &checkpoints, &sink_b);
+        eventually(|| (sink_a.tokens().len() == 5 && sink_b.tokens().len() == 5).then_some(()))
+            .await;
+
+        let health = eventually(|| {
+            let health = manager.health("alpha").unwrap();
+            (health.events_processed == 5).then_some(health)
+        })
+        .await;
+        assert_eq!(health.name, "alpha");
+        assert_eq!(health.status, SubscriptionStatus::Running);
+        assert_eq!(health.last_position, Some(Position::new("fake", 5)));
+        assert_eq!(health.last_error, None);
+        let saved = checkpoints.get("alpha").unwrap();
+        assert_eq!(health.last_position, saved.position);
+        assert_eq!(health.events_processed, saved.events_processed);
+
+        feed.append(1);
+        let health = eventually(|| {
+            let health = manager.health("alpha").unwrap();
+            (health.events_processed == 6).then_some(health)
+        })
+        .await;
+        assert_eq!(health.last_position, Some(Position::new("fake", 6)));
+        let all = manager.health_all();
+        assert_eq!(
+            all.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
+        assert_eq!(
+            manager.health("nope"),
+            Err(ManagerError::UnknownSubscription("nope".to_owned()))
+        );
         driver.abort();
     }
 }

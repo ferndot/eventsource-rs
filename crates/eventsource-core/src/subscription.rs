@@ -115,6 +115,9 @@ enum Wait {
     Stop,
 }
 
+/// Called with the runner's checkpoint when it starts and after each saved page.
+type ProgressObserver = Box<dyn Fn(&Checkpoint) + Send + Sync>;
+
 /// Delivers the feed to a sink, checkpointing after each page.
 ///
 /// `F` is the feed, `C` the checkpoint store, and `P` the sink, usually an
@@ -130,6 +133,7 @@ pub struct SubscriptionRunner<F, C, P, D = NoDeadLetters, T = NoopTracer> {
     cursor: Option<Checkpoint>,
     stats: RunStats,
     tracer: T,
+    progress: Option<ProgressObserver>,
 }
 
 impl<F, C, P> SubscriptionRunner<F, C, P> {
@@ -145,6 +149,7 @@ impl<F, C, P> SubscriptionRunner<F, C, P> {
             cursor: None,
             stats: RunStats::default(),
             tracer: NoopTracer,
+            progress: None,
         }
     }
 }
@@ -171,6 +176,7 @@ impl<F, C, P, T> SubscriptionRunner<F, C, P, NoDeadLetters, T> {
             cursor: self.cursor,
             stats: self.stats,
             tracer: self.tracer,
+            progress: self.progress,
         }
     }
 }
@@ -191,7 +197,18 @@ impl<F, C, P, D, T> SubscriptionRunner<F, C, P, D, T> {
             cursor: self.cursor,
             stats: self.stats,
             tracer,
+            progress: self.progress,
         }
+    }
+
+    /// Reports the checkpoint to `observer` when the runner starts and after each page is saved.
+    ///
+    /// The observer runs inline between pages, so it must not block.
+    /// [`crate::manager::SubscriptionManager`] uses this for health reporting.
+    #[must_use]
+    pub fn with_progress(mut self, observer: impl Fn(&Checkpoint) + Send + Sync + 'static) -> Self {
+        self.progress = Some(Box::new(observer));
+        self
     }
 }
 
@@ -273,6 +290,7 @@ where
                 }
             },
         };
+        self.report_progress(&cursor);
         self.cursor = Some(cursor);
         Ok(())
     }
@@ -313,10 +331,17 @@ where
         }
         drop(trace);
 
+        self.report_progress(&next);
         self.cursor = Some(next);
         self.stats.events_delivered = self.stats.events_delivered.saturating_add(delivered);
         self.stats.batches += 1;
         Ok(true)
+    }
+
+    fn report_progress(&self, checkpoint: &Checkpoint) {
+        if let Some(observer) = &self.progress {
+            observer(checkpoint);
+        }
     }
 
     fn start_page_span(&self, page_size: usize) -> T::Span {
