@@ -112,6 +112,7 @@ dependencies = [
  "eventsource-testing",
  "futures",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
