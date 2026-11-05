@@ -43,6 +43,8 @@ fn order_stream() -> StreamId {
 /// Runs raw SQL against the file, bypassing the store.
 fn tamper(path: &Path, sql: &str) {
     let conn = rusqlite::Connection::open(path).expect("raw open");
+    conn.pragma_update(None, "foreign_keys", false)
+        .expect("pragma");
     conn.execute_batch(sql).expect("tamper");
 }
 

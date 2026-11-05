@@ -2,7 +2,7 @@
 
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
@@ -13,7 +13,7 @@ use eventsource_core::envelope::{
 use eventsource_core::error::{PositionError, StoreError};
 use eventsource_core::event::{EventMeta, EventRecord};
 use eventsource_core::store::{AggregateStore, GlobalFeed};
-use eventsource_core::{ExpectedVersion, Position, StreamId, Version};
+use eventsource_core::{EventRegistry, ExpectedVersion, Position, StreamId, Version};
 
 use crate::db;
 use crate::error::SqliteError;
@@ -30,6 +30,7 @@ const SELECT_COLUMNS: &str = "position, stream_id, stream_version, event_id, eve
 /// `SQLite` and the version check and the insert are one atomic step.
 pub struct SqliteEventStore {
     store_id: String,
+    registry: Option<Arc<EventRegistry>>,
     conn: Mutex<Connection>,
 }
 
@@ -43,8 +44,27 @@ impl SqliteEventStore {
         let store_id = db::store_id(&conn)?;
         Ok(Self {
             store_id,
+            registry: None,
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Rejects appends of event types not in `registry`, and reports stored
+    /// events of unknown types as [`StoreError::UnregisteredEventType`] on read.
+    #[must_use]
+    pub fn with_registry(mut self, registry: Arc<EventRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
+    /// Fails if a registry is set and `event_type` is not in it.
+    fn check_registered(&self, event_type: &str) -> Result<(), StoreError> {
+        match &self.registry {
+            Some(registry) if !registry.contains(event_type) => {
+                Err(StoreError::UnregisteredEventType(event_type.to_owned()))
+            }
+            _ => Ok(()),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -65,6 +85,9 @@ impl SqliteEventStore {
     ) -> Result<AppendResult, StoreError> {
         if events.is_empty() {
             return Err(StoreError::EmptyAppend);
+        }
+        for record in &events {
+            self.check_registered(&record.event_type)?;
         }
         let stream_key = stream.to_string();
 
@@ -182,7 +205,11 @@ impl SqliteEventStore {
         let rows = statement
             .query_and_then(params, |row| self.envelope_from_row(row))
             .map_err(SqliteError::from)?;
-        Ok(rows.collect::<Result<Vec<_>, SqliteError>>()?)
+        let envelopes = rows.collect::<Result<Vec<_>, SqliteError>>()?;
+        for envelope in &envelopes {
+            self.check_registered(&envelope.record.event_type)?;
+        }
+        Ok(envelopes)
     }
 
     fn envelope_from_row(&self, row: &Row<'_>) -> Result<EventEnvelope, SqliteError> {

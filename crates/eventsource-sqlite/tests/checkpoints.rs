@@ -30,7 +30,11 @@ async fn checkpoints_survive_reopen() {
     let reopened = SqliteCheckpointStore::open(&path).expect("reopen");
     assert_eq!(reopened.load("proj").await.expect("load"), Some(saved));
     assert_eq!(
-        reopened.load("other").await.expect("load").map(|c| c.events_processed),
+        reopened
+            .load("other")
+            .await
+            .expect("load")
+            .map(|c| c.events_processed),
         Some(2),
         "checkpoints are keyed by name"
     );

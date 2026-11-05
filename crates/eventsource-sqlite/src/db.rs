@@ -69,7 +69,9 @@ pub(crate) fn store_id(conn: &Connection) -> Result<String, SqliteError> {
         "INSERT OR IGNORE INTO meta (key, value) VALUES ('store_id', ?1)",
         [uuid::Uuid::new_v4().to_string()],
     )?;
-    Ok(conn.query_row("SELECT value FROM meta WHERE key = 'store_id'", [], |row| {
-        row.get(0)
-    })?)
+    Ok(
+        conn.query_row("SELECT value FROM meta WHERE key = 'store_id'", [], |row| {
+            row.get(0)
+        })?,
+    )
 }

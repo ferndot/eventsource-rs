@@ -61,7 +61,10 @@ async fn reopening_the_file_returns_the_same_events_and_positions() {
 
     // Positions handed out before the restart are still valid after it.
     let resumed = reopened
-        .read_all(written.first().map(|e| &e.position), FeedReadOptions::default())
+        .read_all(
+            written.first().map(|e| &e.position),
+            FeedReadOptions::default(),
+        )
         .await
         .expect("resume");
     assert_eq!(resumed, written[1..]);
@@ -91,7 +94,10 @@ fn two_handles_on_one_file_have_one_winner_for_exact_zero() {
         });
         let results = [a, b];
         let wins = results.iter().filter(|r| r.is_ok()).count();
-        assert_eq!(wins, 1, "round {round}: exactly one handle may win: {results:?}");
+        assert_eq!(
+            wins, 1,
+            "round {round}: exactly one handle may win: {results:?}"
+        );
         assert!(
             results
                 .iter()

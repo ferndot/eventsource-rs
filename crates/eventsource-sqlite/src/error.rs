@@ -22,6 +22,8 @@ pub enum SqliteError {
 }
 
 impl SqliteError {
+    // Takes the owned error so it composes directly with `map_err`.
+    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn corrupt(column: &'static str, detail: impl ToString) -> Self {
         Self::Corrupt {
             column,
