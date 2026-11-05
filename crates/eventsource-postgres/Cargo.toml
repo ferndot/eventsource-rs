@@ -1,0 +1,25 @@
+[package]
+name = "eventsource-postgres"
+description = "PostgreSQL-backed event store, checkpoint, snapshot, dead-letter, lock, outbox and read model stores for eventsource-core."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+eventsource-core = { path = "../eventsource-core" }
+chrono.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+eventsource-memory = { path = "../eventsource-memory" }
+eventsource-testing = { path = "../eventsource-testing" }
+serde.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true
