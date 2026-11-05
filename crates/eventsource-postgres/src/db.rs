@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS outbox (
     last_error  TEXT
 );
 CREATE INDEX IF NOT EXISTS outbox_pending ON outbox (status, id);
+CREATE TABLE IF NOT EXISTS readmodels (
+    model    TEXT NOT NULL,
+    id       TEXT NOT NULL,
+    document TEXT NOT NULL,
+    PRIMARY KEY (model, id)
+);
 CREATE TABLE IF NOT EXISTS dead_letters (
     id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     subscription   TEXT   NOT NULL,
