@@ -2,11 +2,12 @@
 //!
 //! A subscription that exhausts its [`crate::subscription::RetryPolicy`] on one
 //! event can park that event here and carry on, instead of blocking forever.
-//! Parked events are listed and retried later.
+//! Parked events are listed and retried later with [`retry_parked`].
 
 use std::future::Future;
 use std::sync::Arc;
 
+use crate::bus::EventPublisher;
 use crate::envelope::EventEnvelope;
 use crate::error::{BusError, DeadLetterError};
 
@@ -121,6 +122,41 @@ impl DeadLetterStore for NoDeadLetters {
     async fn remove(&self, _id: DeadLetterId) -> Result<bool, DeadLetterError> {
         Ok(false)
     }
+}
+
+/// Error from [`retry_parked`].
+#[derive(Debug, thiserror::Error)]
+pub enum RetryParkedError {
+    /// The handlers failed again. The entry stays parked.
+    #[error("handlers failed again; the entry stays parked")]
+    Handler(#[source] BusError),
+    /// The handlers succeeded but the entry could not be removed.
+    #[error(transparent)]
+    Store(#[from] DeadLetterError),
+}
+
+/// Runs the handlers on a parked event once and removes the entry if they succeed.
+///
+/// No checkpoint is read or written: the subscription already moved past the
+/// event when it was parked, so a retry must not move it again. Returns
+/// whether the entry was still there to remove.
+///
+/// # Errors
+/// [`RetryParkedError::Handler`] if the handlers fail; the entry stays parked.
+/// [`RetryParkedError::Store`] if removing the entry fails.
+pub async fn retry_parked<P, D>(
+    sink: &P,
+    store: &D,
+    parked: &ParkedEvent,
+) -> Result<bool, RetryParkedError>
+where
+    P: EventPublisher,
+    D: DeadLetterStore,
+{
+    sink.publish(std::slice::from_ref(&parked.entry.envelope))
+        .await
+        .map_err(RetryParkedError::Handler)?;
+    Ok(store.remove(parked.id).await?)
 }
 
 /// Text for a failed publish, naming each failing handler.

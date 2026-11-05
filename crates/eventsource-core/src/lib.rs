@@ -28,7 +28,7 @@ pub use aggregate::AggregateRoot;
 pub use bus::{EventPublisher, Handler, NoPublisher, SubscriptionId};
 pub use checkpoint::{Checkpoint, CheckpointStore};
 pub use clock::{Clock, SystemClock};
-pub use dead_letter::{DeadLetterEntry, DeadLetterId, DeadLetterStore, ParkedEvent};
+pub use dead_letter::{DeadLetterEntry, DeadLetterId, DeadLetterStore, ParkedEvent, RetryParkedError, retry_parked};
 pub use decider::Decider;
 pub use envelope::{
     AppendResult, EventEnvelope, FeedReadOptions, ReadDirection, StreamReadOptions,

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eventsource_core::bus::handler;
-use eventsource_core::dead_letter::{DeadLetterEntry, DeadLetterStore};
+use eventsource_core::dead_letter::{DeadLetterEntry, DeadLetterStore, RetryParkedError, retry_parked};
 use eventsource_core::checkpoint::CheckpointStore;
 use eventsource_core::error::{BackendError, SubscriptionError};
 use eventsource_core::envelope::FeedReadOptions;
@@ -233,4 +233,50 @@ async fn listing_an_unknown_subscription_is_empty() {
     let store = InMemoryDeadLetterStore::new();
     store.park(entry("orders", "A").await).await.expect("park");
     assert!(store.list("nobody").await.expect("list").is_empty());
+}
+
+/// Runs a subscription over `First, Poison, Last` so that `Poison` ends up parked.
+async fn park_poison() -> (Arc<InMemoryCheckpointStore>, Arc<InMemoryDeadLetterStore>) {
+    let store = Arc::new(InMemoryEventStore::new());
+    append_events(&store, &["First", "Poison", "Last"]).await;
+    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    let dead_letters = Arc::new(InMemoryDeadLetterStore::new());
+    let (bus, _seen) = bus_failing_on("Poison");
+    let mut config = SubscriptionConfig::new("orders");
+    config.retry = fast_retry(2);
+    SubscriptionRunner::new(store, Arc::clone(&checkpoints), bus, config)
+        .with_dead_letters(Arc::clone(&dead_letters))
+        .run_until_caught_up()
+        .await
+        .expect("run");
+    (checkpoints, dead_letters)
+}
+
+#[tokio::test]
+async fn retrying_a_parked_entry_removes_it_on_success_without_moving_the_checkpoint() {
+    let (checkpoints, dead_letters) = park_poison().await;
+    let before = checkpoints.load("orders").await.expect("load");
+    let parked = dead_letters.list("orders").await.expect("list").remove(0);
+    let (healthy, seen) = bus_failing_on("never");
+
+    let removed = retry_parked(&healthy, &dead_letters, &parked)
+        .await
+        .expect("retry succeeds");
+
+    assert!(removed);
+    assert_eq!(*seen.lock().expect("lock"), ["Poison"]);
+    assert!(dead_letters.list("orders").await.expect("list").is_empty());
+    assert_eq!(checkpoints.load("orders").await.expect("load"), before);
+}
+
+#[tokio::test]
+async fn retrying_a_parked_entry_that_fails_again_leaves_it_parked() {
+    let (_checkpoints, dead_letters) = park_poison().await;
+    let parked = dead_letters.list("orders").await.expect("list").remove(0);
+    let (still_broken, _seen) = bus_failing_on("Poison");
+
+    let result = retry_parked(&still_broken, &dead_letters, &parked).await;
+
+    assert!(matches!(result, Err(RetryParkedError::Handler(_))));
+    assert_eq!(dead_letters.list("orders").await.expect("list").len(), 1);
 }
