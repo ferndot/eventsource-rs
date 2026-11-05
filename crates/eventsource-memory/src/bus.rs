@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use eventsource_core::bus::{EventPublisher, Handler, HandlerFailure, SubscriptionId};
 use eventsource_core::envelope::EventEnvelope;
@@ -107,8 +107,26 @@ impl InMemoryEventBus {
     }
 }
 
+impl InMemoryEventBus {
+    /// Opt-in background delivery: spawns a task that delivers `envelopes` and
+    /// returns at once. Inline [`EventPublisher::publish`] stays the default.
+    ///
+    /// Must be called inside a Tokio runtime.
+    pub fn publish_background(self: &Arc<Self>, envelopes: Vec<EventEnvelope>) {
+        let bus = Arc::clone(self);
+        tokio::spawn(async move { bus.deliver(&envelopes).await });
+    }
+}
+
 impl EventPublisher for InMemoryEventBus {
     async fn publish(&self, envelopes: &[EventEnvelope]) -> Result<(), BusError> {
+        self.deliver(envelopes).await
+    }
+}
+
+impl InMemoryEventBus {
+    /// Runs every handler for every envelope, isolating panics and errors.
+    async fn deliver(&self, envelopes: &[EventEnvelope]) -> Result<(), BusError> {
         let mut failures = Vec::new();
         for envelope in envelopes {
             for (subscription, handler) in self.handlers_for(&envelope.record.event_type) {

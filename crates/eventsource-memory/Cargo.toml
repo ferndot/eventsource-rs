@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 eventsource-core = { path = "../eventsource-core" }
 futures.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 uuid.workspace = true
 
 [dev-dependencies]
