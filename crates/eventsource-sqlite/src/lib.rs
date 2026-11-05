@@ -7,11 +7,13 @@ pub mod checkpoint;
 mod db;
 pub mod dead_letter;
 pub mod error;
+pub mod lock;
 pub mod snapshot;
 pub mod store;
 
 pub use checkpoint::SqliteCheckpointStore;
 pub use dead_letter::SqliteDeadLetterStore;
 pub use error::SqliteError;
+pub use lock::SqliteLockStore;
 pub use snapshot::SqliteSnapshotStore;
 pub use store::SqliteEventStore;
