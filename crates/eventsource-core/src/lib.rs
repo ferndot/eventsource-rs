@@ -16,6 +16,7 @@ pub mod event;
 pub mod ids;
 pub mod live;
 pub mod position;
+pub mod readmodel;
 pub mod registry;
 pub mod repository;
 pub mod snapshot;
@@ -37,13 +38,14 @@ pub use envelope::{
     AppendResult, EventEnvelope, FeedReadOptions, ReadDirection, StreamReadOptions,
 };
 pub use error::{
-    BusError, CheckpointError, DeadLetterError, DecodeError, RepositoryError, StoreError,
-    SubscriptionError,
+    BusError, CheckpointError, DeadLetterError, DecodeError, ReadModelError, RepositoryError,
+    StoreError, SubscriptionError,
 };
 pub use event::{DomainEvent, EventMeta, EventRecord};
 pub use ids::{AggregateId, CausationId, CorrelationId, EventId, TenantId};
 pub use live::LiveFeed;
 pub use position::Position;
+pub use readmodel::ReadModelStore;
 pub use registry::EventRegistry;
 pub use repository::{AggregateRepository, CommandContext};
 pub use store::{AggregateStore, GlobalFeed};

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 eventsource-core = { path = "../eventsource-core" }
 futures.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 uuid.workspace = true
 
@@ -15,7 +16,6 @@ uuid.workspace = true
 chrono.workspace = true
 eventsource-testing = { path = "../eventsource-testing" }
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
