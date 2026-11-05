@@ -162,3 +162,35 @@ async fn load_uses_the_snapshot_and_replays_only_later_events() {
     assert_eq!(aggregate.version(), Version::new(5));
     assert_eq!(aggregate.committed_version(), Version::new(5));
 }
+
+async fn add(repo: &AggregateRepository<Counter, Events, Snapshots>, id: AggregateId, n: &[u64]) {
+    repo.execute(id, CounterCommand::Add(n.to_vec()), &CommandContext::new())
+        .await
+        .expect("execute");
+}
+
+#[tokio::test]
+async fn save_writes_a_snapshot_at_a_policy_boundary_and_not_elsewhere() {
+    let events: Events = Arc::new(InMemoryEventStore::new());
+    let snapshots: Snapshots = Arc::new(InMemorySnapshotStore::new());
+    let repo = snapshot_repo(&events, &snapshots, 3);
+    let id = AggregateId::new();
+    let stored = || async { snapshots.load(&stream(id)).await.expect("load") };
+
+    add(&repo, id, &[1, 1]).await; // version 2: below the first boundary
+    assert!(stored().await.is_none(), "no snapshot before a boundary");
+
+    add(&repo, id, &[1]).await; // version 3: exactly on the boundary
+    let at_three = stored().await.expect("snapshot at version 3");
+    assert_eq!(at_three.version, Version::new(3));
+    assert_eq!(at_three.state, json!({ "sum": 3 }));
+    assert_eq!(at_three.schema_version, 1);
+
+    add(&repo, id, &[1]).await; // version 4: between boundaries
+    assert_eq!(stored().await.expect("kept").version, Version::new(3));
+
+    add(&repo, id, &[1, 1, 1]).await; // 4 -> 7: steps over the boundary at 6
+    let at_seven = stored().await.expect("snapshot after stepping over 6");
+    assert_eq!(at_seven.version, Version::new(7));
+    assert_eq!(at_seven.state, json!({ "sum": 7 }));
+}

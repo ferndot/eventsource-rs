@@ -19,7 +19,7 @@ use crate::envelope::{AppendResult, StreamReadOptions};
 use crate::error::{RepositoryError, StoreError, StreamIdError};
 use crate::event::{EventMeta, EventRecord};
 use crate::ids::{AggregateId, CausationId, CorrelationId, EventId, TenantId};
-use crate::snapshot::{NoSnapshots, SnapshotPolicy, SnapshotStore};
+use crate::snapshot::{NoSnapshots, Snapshot, SnapshotPolicy, SnapshotStore};
 use crate::store::AggregateStore;
 use crate::stream_id::{Category, StreamId};
 use crate::version::{ExpectedVersion, Version};
@@ -276,13 +276,43 @@ where
             .collect::<Result<Vec<_>, _>>()
             .map_err(RepositoryError::Encode)?;
 
-        let expected = ExpectedVersion::Exact(aggregate.committed_version());
+        let previous = aggregate.committed_version();
+        let expected = ExpectedVersion::Exact(previous);
         let result = self
             .store
             .append(&self.stream(aggregate.id()), records, expected)
             .await?;
         aggregate.mark_committed();
+        self.write_snapshot(aggregate, previous).await?;
         Ok(Some(result))
+    }
+
+    /// Snapshots `aggregate` if the save that took it from `previous` crossed a policy boundary.
+    async fn write_snapshot(
+        &self,
+        aggregate: &AggregateRoot<D>,
+        previous: Version,
+    ) -> Result<(), RepositoryError<D::Error>> {
+        let Some(config) = &self.snapshots else {
+            return Ok(());
+        };
+        if !config.policy.crossed(previous, aggregate.version()) {
+            return Ok(());
+        }
+        let state = (config.encode)(aggregate.state()).map_err(RepositoryError::Encode)?;
+        let snapshot = Snapshot {
+            stream: self.stream(aggregate.id()),
+            version: aggregate.version(),
+            schema_version: 1,
+            state,
+            created_at: self.clock.now(),
+        };
+        config
+            .store
+            .save(snapshot)
+            .await
+            .map_err(|e| StoreError::Backend(Box::new(e)))?;
+        Ok(())
     }
 
     /// Loads (or creates), runs one command, and saves.
