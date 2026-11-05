@@ -126,6 +126,17 @@ pub enum DecodeError {
     },
 }
 
+/// Error from a snapshot store. Callers treat every variant as "no usable snapshot".
+#[derive(Debug, thiserror::Error)]
+pub enum SnapshotError {
+    /// A stored snapshot could not be read back.
+    #[error("corrupt snapshot: {0}")]
+    Corrupt(String),
+    /// The backend failed. The cause is available through `source()`.
+    #[error("snapshot backend failed")]
+    Backend(#[source] BackendError),
+}
+
 /// Error building a [`crate::snapshot::SnapshotPolicy`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SnapshotPolicyError {

@@ -3,10 +3,66 @@
 //! A snapshot is only ever an optimisation. The event stream stays the source
 //! of truth, so anything wrong with a snapshot means "replay the events".
 
+use std::future::Future;
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
-use crate::error::SnapshotPolicyError;
+use chrono::{DateTime, Utc};
+use serde_json::Value;
+
+use crate::error::{SnapshotError, SnapshotPolicyError};
+use crate::stream_id::StreamId;
 use crate::version::Version;
+
+/// An aggregate's serialized state as of `version`.
+///
+/// The payload is opaque to stores, the same way an event payload is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Snapshot {
+    /// The stream the state belongs to.
+    pub stream: StreamId,
+    /// The stream version the state reflects: events `1..=version` are folded in.
+    pub version: Version,
+    /// Version of the state's serialized shape. A reader that expects another
+    /// version must ignore the snapshot.
+    pub schema_version: u32,
+    /// The serialized aggregate state.
+    pub state: Value,
+    /// When the snapshot was taken.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Durable storage for the latest [`Snapshot`] of each stream.
+///
+/// A store keeps only the newest snapshot per stream. Saving a snapshot older
+/// than the stored one succeeds and changes nothing, so a slow writer cannot
+/// roll a stream back.
+pub trait SnapshotStore: Send + Sync {
+    /// Stores `snapshot` unless a newer one is already stored for its stream.
+    fn save(&self, snapshot: Snapshot) -> impl Future<Output = Result<(), SnapshotError>> + Send;
+
+    /// The latest snapshot of `stream`, or `None` if it has none.
+    ///
+    /// # Errors
+    /// [`SnapshotError::Corrupt`] if a snapshot exists but cannot be read back.
+    fn load(
+        &self,
+        stream: &StreamId,
+    ) -> impl Future<Output = Result<Option<Snapshot>, SnapshotError>> + Send;
+}
+
+impl<T: SnapshotStore> SnapshotStore for Arc<T> {
+    fn save(&self, snapshot: Snapshot) -> impl Future<Output = Result<(), SnapshotError>> + Send {
+        (**self).save(snapshot)
+    }
+
+    fn load(
+        &self,
+        stream: &StreamId,
+    ) -> impl Future<Output = Result<Option<Snapshot>, SnapshotError>> + Send {
+        (**self).load(stream)
+    }
+}
 
 /// When to write a snapshot: every `n` events.
 ///

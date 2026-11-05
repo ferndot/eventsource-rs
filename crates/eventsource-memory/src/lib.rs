@@ -6,8 +6,10 @@
 mod background;
 pub mod bus;
 pub mod checkpoint;
+pub mod snapshot;
 pub mod store;
 
 pub use bus::InMemoryEventBus;
 pub use checkpoint::InMemoryCheckpointStore;
+pub use snapshot::InMemorySnapshotStore;
 pub use store::InMemoryEventStore;
