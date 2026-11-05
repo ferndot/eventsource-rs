@@ -1,7 +1,7 @@
 //! Error types, one per port, so callers match on exactly what can go wrong.
 
 use crate::bus::HandlerFailure;
-use crate::ids::{AggregateId, EventId};
+use crate::ids::{AggregateId, EventId, TenantId};
 use crate::stream_id::StreamId;
 use crate::version::{ExpectedVersion, Version};
 
@@ -186,6 +186,14 @@ pub enum RepositoryError<E: std::error::Error + 'static> {
     NotFound {
         /// The missing aggregate.
         id: AggregateId,
+    },
+    /// The command context names a different tenant than the repository is scoped to.
+    #[error("command is for tenant {context} but the repository is scoped to tenant {scope}")]
+    TenantMismatch {
+        /// The tenant the repository is bound to.
+        scope: TenantId,
+        /// The tenant named by the command context.
+        context: TenantId,
     },
 }
 

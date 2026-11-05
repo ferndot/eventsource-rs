@@ -395,6 +395,14 @@ where
         command: D::Command,
         context: &CommandContext,
     ) -> Result<(), RepositoryError<D::Error>> {
+        if let (Some(scope), Some(named)) = (self.tenant, context.tenant_id)
+            && scope != named
+        {
+            return Err(RepositoryError::TenantMismatch {
+                scope,
+                context: named,
+            });
+        }
         let occurred_at = self.clock.now();
         let mut stamp = || EventMeta {
             event_id: EventId::new(),

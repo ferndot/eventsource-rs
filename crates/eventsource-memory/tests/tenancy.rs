@@ -192,3 +192,25 @@ async fn an_unscoped_repository_keeps_its_streams_and_the_context_tenant() {
     // A scoped repository does not see unscoped history.
     assert!(repo(&store, tenant).get(id).await.expect("get").is_none());
 }
+
+#[tokio::test]
+async fn a_command_context_for_another_tenant_is_rejected_by_the_scope() {
+    use eventsource_core::error::RepositoryError;
+
+    let store: Store = Arc::new(InMemoryEventStore::new());
+    let (a, b) = (TenantId::new(), TenantId::new());
+    let id = AggregateId::new();
+    let mut ctx = CommandContext::new();
+    ctx.tenant_id = Some(b);
+
+    let outcome = repo(&store, a).execute(id, Add(1), &ctx).await;
+    assert!(matches!(
+        outcome,
+        Err(RepositoryError::TenantMismatch { scope, context }) if scope == a && context == b
+    ));
+    assert_eq!(repo(&store, a).stored_version(id).await.expect("v").get(), 0);
+
+    // The same tenant in the context is fine.
+    ctx.tenant_id = Some(a);
+    repo(&store, a).execute(id, Add(1), &ctx).await.expect("same tenant");
+}
