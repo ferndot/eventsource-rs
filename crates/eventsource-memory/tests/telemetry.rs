@@ -61,3 +61,95 @@ mod recording {
         assert_eq!(load.get(attr::VERSION), Some(&RecordedValue::U64(2)));
     }
 }
+
+mod subscription {
+    use std::num::NonZeroU32;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use eventsource_core::bus::handler;
+    use eventsource_core::error::BackendError;
+    use eventsource_core::store::AggregateStore;
+    use eventsource_core::telemetry::{attr, span};
+    use eventsource_core::{
+        AggregateId, Category, EventEnvelope, ExpectedVersion, RetryPolicy, StreamId,
+        SubscriptionConfig, SubscriptionRunner,
+    };
+    use eventsource_memory::{InMemoryCheckpointStore, InMemoryEventBus, InMemoryEventStore};
+    use eventsource_testing::{RecordedValue, RecordingTracer, record};
+
+    async fn store_with_events(count: usize) -> Arc<InMemoryEventStore> {
+        let store = Arc::new(InMemoryEventStore::new());
+        for _ in 0..count {
+            let stream = StreamId::new(
+                AggregateId::new(),
+                Category::new("Order").expect("category"),
+            );
+            store
+                .append(&stream, vec![record("OrderPlaced")], ExpectedVersion::NoStream)
+                .await
+                .expect("append");
+        }
+        store
+    }
+
+    fn config(attempts: u32) -> SubscriptionConfig {
+        let mut config = SubscriptionConfig::new("order-summary");
+        config.retry = RetryPolicy {
+            max_attempts: NonZeroU32::new(attempts).expect("nonzero"),
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+        };
+        config
+    }
+
+    #[tokio::test]
+    async fn page_span_has_subscription_name_page_size_and_zero_failures_on_success() {
+        let tracer = RecordingTracer::new();
+        let store = store_with_events(3).await;
+        let bus = Arc::new(InMemoryEventBus::new());
+        bus.subscribe_all(handler(|_: EventEnvelope| async { Ok::<(), BackendError>(()) }));
+        let mut runner = SubscriptionRunner::new(
+            Arc::clone(&store),
+            InMemoryCheckpointStore::new(),
+            bus,
+            config(3),
+        )
+        .with_tracer(tracer.clone());
+
+        runner.run_until_caught_up().await.expect("caught up");
+
+        let page = tracer.only_span(span::SUBSCRIPTION_PAGE);
+        assert_eq!(
+            page.get(attr::SUBSCRIPTION_NAME),
+            Some(&RecordedValue::Str("order-summary".into()))
+        );
+        assert_eq!(page.get(attr::BATCH_SIZE), Some(&RecordedValue::U64(3)));
+        assert_eq!(page.get(attr::FAILURE_COUNT), Some(&RecordedValue::U64(0)));
+        assert_eq!(page.failure, None);
+    }
+
+    #[tokio::test]
+    async fn page_span_records_failure_count_when_a_handler_fails() {
+        let tracer = RecordingTracer::new();
+        let store = store_with_events(2).await;
+        let bus = Arc::new(InMemoryEventBus::new());
+        bus.subscribe_all(handler(|_: EventEnvelope| async {
+            Err::<(), BackendError>("boom".into())
+        }));
+        let mut runner = SubscriptionRunner::new(
+            Arc::clone(&store),
+            InMemoryCheckpointStore::new(),
+            bus,
+            config(3),
+        )
+        .with_tracer(tracer.clone());
+
+        runner.run_until_caught_up().await.expect_err("handler fails");
+
+        let page = tracer.only_span(span::SUBSCRIPTION_PAGE);
+        assert_eq!(page.get(attr::BATCH_SIZE), Some(&RecordedValue::U64(2)));
+        assert_eq!(page.get(attr::FAILURE_COUNT), Some(&RecordedValue::U64(3)));
+        assert!(page.failure.is_some(), "a page that exhausts retries is failed");
+    }
+}
