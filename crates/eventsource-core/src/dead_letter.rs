@@ -44,7 +44,7 @@ pub struct DeadLetterEntry {
 /// A [`DeadLetterEntry`] as held by a store.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParkedEvent {
-    /// The store-assigned id of this entry.
+    /// Id to pass to [`DeadLetterStore::remove`].
     pub id: DeadLetterId,
     /// What was parked.
     pub entry: DeadLetterEntry,
@@ -71,6 +71,15 @@ pub trait DeadLetterStore: Send + Sync {
         subscription: &str,
     ) -> impl Future<Output = Result<Vec<ParkedEvent>, DeadLetterError>> + Send;
 
+
+    /// Removes an entry. Returns whether it existed.
+    ///
+    /// # Errors
+    /// [`DeadLetterError::Backend`] if the backend fails.
+    fn remove(
+        &self,
+        id: DeadLetterId,
+    ) -> impl Future<Output = Result<bool, DeadLetterError>> + Send;
 }
 
 impl<T: DeadLetterStore> DeadLetterStore for Arc<T> {
@@ -87,6 +96,13 @@ impl<T: DeadLetterStore> DeadLetterStore for Arc<T> {
     ) -> impl Future<Output = Result<Vec<ParkedEvent>, DeadLetterError>> + Send {
         (**self).list(subscription)
     }
+
+    fn remove(
+        &self,
+        id: DeadLetterId,
+    ) -> impl Future<Output = Result<bool, DeadLetterError>> + Send {
+        (**self).remove(id)
+    }
 }
 
 /// The store a runner has when none is configured. It refuses to park.
@@ -100,6 +116,10 @@ impl DeadLetterStore for NoDeadLetters {
 
     async fn list(&self, _subscription: &str) -> Result<Vec<ParkedEvent>, DeadLetterError> {
         Ok(Vec::new())
+    }
+
+    async fn remove(&self, _id: DeadLetterId) -> Result<bool, DeadLetterError> {
+        Ok(false)
     }
 }
 

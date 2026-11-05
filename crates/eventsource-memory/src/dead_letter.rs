@@ -51,4 +51,11 @@ impl DeadLetterStore for InMemoryDeadLetterStore {
             .cloned()
             .collect())
     }
+
+    async fn remove(&self, id: DeadLetterId) -> Result<bool, DeadLetterError> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = state.parked.len();
+        state.parked.retain(|p| p.id != id);
+        Ok(state.parked.len() != before)
+    }
 }

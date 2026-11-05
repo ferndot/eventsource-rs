@@ -6,10 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eventsource_core::bus::handler;
-use eventsource_core::dead_letter::DeadLetterStore;
+use eventsource_core::dead_letter::{DeadLetterEntry, DeadLetterStore};
 use eventsource_core::checkpoint::CheckpointStore;
 use eventsource_core::error::{BackendError, SubscriptionError};
-use eventsource_core::store::AggregateStore;
+use eventsource_core::envelope::FeedReadOptions;
+use eventsource_core::store::{AggregateStore, GlobalFeed};
 use eventsource_core::{
     AggregateId, Category, EventEnvelope, ExpectedVersion, RetryPolicy, StreamId,
     SubscriptionConfig, SubscriptionRunner,
@@ -176,4 +177,60 @@ async fn transient_failure_within_the_retry_budget_is_not_parked() {
     assert_eq!(calls.load(Ordering::SeqCst), 2, "failed once, then retried");
     assert!(dead_letters.list("orders").await.expect("list").is_empty());
     assert_eq!(stats.events_delivered, 2);
+}
+
+/// A stored envelope of the given event type.
+async fn envelope(name: &str) -> EventEnvelope {
+    let store = InMemoryEventStore::new();
+    append_events(&store, &[name]).await;
+    store
+        .read_all(None, FeedReadOptions::default())
+        .await
+        .expect("read")
+        .remove(0)
+}
+
+async fn entry(subscription: &str, name: &str) -> DeadLetterEntry {
+    DeadLetterEntry {
+        subscription: subscription.to_owned(),
+        envelope: envelope(name).await,
+        error: "boom".to_owned(),
+        attempts: 5,
+    }
+}
+
+#[tokio::test]
+async fn memory_store_parks_lists_by_subscription_and_removes() {
+    let store = InMemoryDeadLetterStore::new();
+    let a = store.park(entry("orders", "A").await).await.expect("park a");
+    let b = store.park(entry("orders", "B").await).await.expect("park b");
+    store
+        .park(entry("billing", "C").await)
+        .await
+        .expect("park c");
+    assert_ne!(a, b);
+
+    let orders = store.list("orders").await.expect("list");
+    let types: Vec<_> = orders
+        .iter()
+        .map(|p| p.entry.envelope.record.event_type.as_str())
+        .collect();
+    assert_eq!(types, ["A", "B"], "oldest first, only this subscription");
+    assert_eq!(store.list("billing").await.expect("list").len(), 1);
+
+    assert!(store.remove(a).await.expect("remove"));
+    let left = store.list("orders").await.expect("list");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].id, b);
+    assert!(
+        !store.remove(a).await.expect("remove again"),
+        "removing twice reports it was already gone"
+    );
+}
+
+#[tokio::test]
+async fn listing_an_unknown_subscription_is_empty() {
+    let store = InMemoryDeadLetterStore::new();
+    store.park(entry("orders", "A").await).await.expect("park");
+    assert!(store.list("nobody").await.expect("list").is_empty());
 }
