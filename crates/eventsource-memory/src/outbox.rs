@@ -55,4 +55,12 @@ impl OutboxStore for InMemoryOutboxStore {
             .cloned()
             .collect())
     }
+
+    async fn mark_published(&self, id: OutboxId) -> Result<(), OutboxError> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(message) = state.messages.iter_mut().find(|m| m.id == id) {
+            message.status = OutboxStatus::Published;
+        }
+        Ok(())
+    }
 }

@@ -38,13 +38,16 @@ pub use envelope::{
     AppendResult, EventEnvelope, FeedReadOptions, ReadDirection, StreamReadOptions,
 };
 pub use error::{
-    BusError, CheckpointError, DeadLetterError, DecodeError, OutboxError, RepositoryError, StoreError,
-    SubscriptionError,
+    BusError, CheckpointError, DeadLetterError, DecodeError, OutboxError, RepositoryError,
+    StoreError, SubscriptionError,
 };
 pub use event::{DomainEvent, EventMeta, EventRecord};
 pub use ids::{AggregateId, CausationId, CorrelationId, EventId, TenantId};
 pub use live::LiveFeed;
-pub use outbox::{NewOutboxMessage, OutboxId, OutboxMessage, OutboxStatus, OutboxStore};
+pub use outbox::{
+    NewOutboxMessage, OutboxId, OutboxMessage, OutboxPublisher, OutboxStatus, OutboxStore,
+    RelayReport, relay,
+};
 pub use position::Position;
 pub use registry::EventRegistry;
 pub use repository::{AggregateRepository, CommandContext};

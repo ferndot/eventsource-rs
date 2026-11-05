@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::error::OutboxError;
+use crate::error::{BackendError, OutboxError};
 use crate::stream_id::StreamId;
 
 /// Identifies one outbox message. Stores assign these, in enqueue order.
@@ -107,6 +107,13 @@ pub trait OutboxStore: Send + Sync {
         &self,
         limit: usize,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, OutboxError>> + Send;
+
+    /// Marks a message published, so it is no longer fetched as pending.
+    /// Marking an unknown or already published message is a no-op.
+    ///
+    /// # Errors
+    /// [`OutboxError::Backend`] if the backend fails.
+    fn mark_published(&self, id: OutboxId) -> impl Future<Output = Result<(), OutboxError>> + Send;
 }
 
 impl<T: OutboxStore> OutboxStore for Arc<T> {
@@ -123,4 +130,70 @@ impl<T: OutboxStore> OutboxStore for Arc<T> {
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, OutboxError>> + Send {
         (**self).fetch_pending(limit)
     }
+
+    fn mark_published(&self, id: OutboxId) -> impl Future<Output = Result<(), OutboxError>> + Send {
+        (**self).mark_published(id)
+    }
+}
+
+/// Delivers outbox messages to their destination, for example a message bus.
+pub trait OutboxPublisher: Send + Sync {
+    /// Delivers one message. `Ok` means the destination has accepted it.
+    ///
+    /// # Errors
+    /// Any error leaves the message pending, to be offered again.
+    fn publish(
+        &self,
+        message: &OutboxMessage,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send;
+}
+
+/// One message the relay could not deliver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayFailure {
+    /// The message that stayed pending.
+    pub id: OutboxId,
+    /// Text of the publisher's error.
+    pub error: String,
+}
+
+/// What one [`relay`] run did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelayReport {
+    /// How many messages were delivered and marked published.
+    pub published: usize,
+    /// The message that failed, if the run stopped on one.
+    pub failed: Vec<RelayFailure>,
+}
+
+/// Drains up to `limit` pending messages from `store` into `publisher`.
+///
+/// A message is marked published only after `publisher` accepts it, so a crash
+/// between the two re-delivers it on the next run: delivery is at-least-once
+/// and consumers must tolerate duplicates.
+///
+/// # Errors
+/// [`OutboxError`] if the store fails.
+pub async fn relay<S, P>(store: &S, publisher: &P, limit: usize) -> Result<RelayReport, OutboxError>
+where
+    S: OutboxStore,
+    P: OutboxPublisher,
+{
+    let mut report = RelayReport::default();
+    for message in store.fetch_pending(limit).await? {
+        match publisher.publish(&message).await {
+            Ok(()) => {
+                store.mark_published(message.id).await?;
+                report.published += 1;
+            }
+            Err(error) => {
+                report.failed.push(RelayFailure {
+                    id: message.id,
+                    error: error.to_string(),
+                });
+                break;
+            }
+        }
+    }
+    Ok(report)
 }
