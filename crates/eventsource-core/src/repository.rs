@@ -75,6 +75,7 @@ pub struct AggregateRepository<D: Decider, S, N = NoSnapshots> {
     store: S,
     clock: Arc<dyn Clock>,
     category: Category,
+    tenant: Option<TenantId>,
     snapshots: Option<SnapshotConfig<D, N>>,
     _decider: PhantomData<fn() -> D>,
 }
@@ -93,6 +94,7 @@ where
             store,
             clock: Arc::new(SystemClock),
             category: Category::new(D::AGGREGATE_TYPE)?,
+            tenant: None,
             snapshots: None,
             _decider: PhantomData,
         })
@@ -113,6 +115,7 @@ where
             store: self.store,
             clock: self.clock,
             category: self.category,
+            tenant: self.tenant,
             snapshots: Some(SnapshotConfig {
                 store: snapshots,
                 policy,
@@ -135,6 +138,20 @@ where
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// Binds the repository to one tenant.
+    ///
+    /// Streams are namespaced by tenant, so the same aggregate id under two
+    /// tenants is two independent streams, and a scoped repository cannot see
+    /// another tenant's aggregates (or unscoped ones).
+    ///
+    /// # Errors
+    /// Returns an error if the tenant-qualified category is not valid.
+    pub fn with_tenant(mut self, tenant: TenantId) -> Result<Self, StreamIdError> {
+        self.category = Category::new(format!("{tenant}.{}", D::AGGREGATE_TYPE))?;
+        self.tenant = Some(tenant);
+        Ok(self)
     }
 
     fn stream(&self, id: AggregateId) -> StreamId {
