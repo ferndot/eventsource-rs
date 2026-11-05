@@ -12,8 +12,13 @@ use eventsource_core::store::GlobalFeed;
 use eventsource_core::stream_id::{Category, StreamId};
 use eventsource_core::version::Version;
 use eventsource_rabbitmq::{RabbitMqConfig, RabbitMqConsumer, RabbitMqPublisher};
+use eventsource_core::bus::handler;
+use eventsource_core::checkpoint::CheckpointStore;
+use eventsource_core::subscription::{SubscriptionConfig, SubscriptionRunner};
+use eventsource_memory::{InMemoryCheckpointStore, InMemoryEventBus};
 use serde_json::json;
 use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 
 fn amqp_url() -> String {
     std::env::var("AMQP_URL").unwrap_or_else(|_| "amqp://guest:guest@127.0.0.1:5672".to_owned())
@@ -178,4 +183,47 @@ async fn publishing_to_an_unreachable_broker_is_a_backend_error() {
     let result = publisher.publish(&[envelope("OrderPlaced", 1)]).await;
 
     assert!(matches!(result, Err(BusError::Backend(_))), "got {result:?}");
+}
+
+/// Uses the in-memory checkpoint store and in-memory bus as the sink.
+#[tokio::test]
+async fn subscription_runner_delivers_and_checkpoints_from_the_queue() {
+    let config = unique_config();
+    let consumer = Arc::new(RabbitMqConsumer::connect(&amqp_url(), config.clone()).await.unwrap());
+    let publisher = RabbitMqPublisher::new(&amqp_url(), config.clone());
+    let sent: Vec<_> = (1..=5).map(|n| envelope("Step", n)).collect();
+    publisher.publish(&sent).await.unwrap();
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let bus = InMemoryEventBus::new();
+    let sink = Arc::clone(&seen);
+    bus.subscribe_all(handler(move |e: EventEnvelope| {
+        let sink = Arc::clone(&sink);
+        async move {
+            sink.lock().unwrap().push(e.record.meta.event_id);
+            Ok(())
+        }
+    }));
+    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    let mut sub = SubscriptionConfig::new("rabbit-sub");
+    sub.batch_size = NonZeroUsize::new(2).unwrap();
+    let mut runner =
+        SubscriptionRunner::new(Arc::clone(&consumer), Arc::clone(&checkpoints), bus, sub);
+
+    let stats = runner.run_until_caught_up().await.unwrap();
+
+    let expected: Vec<_> = sent.iter().map(|e| e.record.meta.event_id).collect();
+    assert_eq!(*seen.lock().unwrap(), expected);
+    assert_eq!((stats.events_delivered, stats.batches), (5, 3));
+    let saved = checkpoints.load("rabbit-sub").await.unwrap().unwrap();
+    assert_eq!(saved.events_processed, 5);
+    assert_eq!(saved.last_event_id, expected.last().copied());
+    assert_eq!(saved.position, consumer.current_position().await.unwrap());
+
+    // Everything was acknowledged: a new consumer finds the queue empty.
+    consumer.close().await.unwrap();
+    let again = RabbitMqConsumer::connect(&amqp_url(), config.clone()).await.unwrap();
+    assert!(again.read_all(None, page(10)).await.unwrap().is_empty());
+    again.close().await.unwrap();
+    cleanup(&config).await;
 }
