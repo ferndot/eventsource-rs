@@ -153,3 +153,42 @@ mod subscription {
         assert!(page.failure.is_some(), "a page that exhausts retries is failed");
     }
 }
+
+mod publish {
+    use eventsource_core::EventPublisher;
+    use eventsource_core::bus::handler;
+    use eventsource_core::error::BackendError;
+    use eventsource_core::store::AggregateStore;
+    use eventsource_core::telemetry::{attr, span};
+    use eventsource_core::{AggregateId, Category, EventEnvelope, ExpectedVersion, StreamId};
+    use eventsource_memory::{InMemoryEventBus, InMemoryEventStore};
+    use eventsource_testing::{RecordedValue, RecordingTracer, record};
+
+    #[tokio::test]
+    async fn publish_span_has_event_count_and_handler_failure_count() {
+        let tracer = RecordingTracer::new();
+        let bus = InMemoryEventBus::new().with_tracer(tracer.clone());
+        bus.subscribe_all(handler(|_: EventEnvelope| async {
+            Err::<(), BackendError>("boom".into())
+        }));
+        let stream = StreamId::new(
+            AggregateId::new(),
+            Category::new("Order").expect("category"),
+        );
+        let appended = InMemoryEventStore::new()
+            .append(
+                &stream,
+                vec![record("OrderPlaced"), record("OrderPaid")],
+                ExpectedVersion::NoStream,
+            )
+            .await
+            .expect("append");
+
+        bus.publish(&appended.envelopes).await.expect_err("handler fails");
+
+        let publish = tracer.only_span(span::PUBLISH);
+        assert_eq!(publish.get(attr::EVENT_COUNT), Some(&RecordedValue::U64(2)));
+        assert_eq!(publish.get(attr::FAILURE_COUNT), Some(&RecordedValue::U64(2)));
+        assert!(publish.failure.is_some());
+    }
+}

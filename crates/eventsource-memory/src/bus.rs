@@ -8,6 +8,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use eventsource_core::bus::{EventPublisher, Handler, HandlerFailure, SubscriptionId};
 use eventsource_core::envelope::EventEnvelope;
 use eventsource_core::error::BusError;
+use eventsource_core::telemetry::{NoopTracer, Span, Tracer, attr, span};
 use futures::FutureExt;
 
 use crate::background::BackgroundDelivery;
@@ -43,10 +44,11 @@ struct Subscription {
 /// each group they run in subscription order. A failing handler does not stop
 /// the others. Failures are collected and returned once every handler has run.
 #[derive(Default)]
-pub struct InMemoryEventBus {
+pub struct InMemoryEventBus<T = NoopTracer> {
     next_id: AtomicU64,
     subscriptions: RwLock<Vec<Subscription>>,
     background: Arc<BackgroundDelivery>,
+    tracer: T,
 }
 
 impl InMemoryEventBus {
@@ -54,6 +56,21 @@ impl InMemoryEventBus {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+impl<T> InMemoryEventBus<T> {
+    /// Reports a span per publish to `tracer`. Keeps existing subscriptions.
+    ///
+    /// Without this call the bus uses [`NoopTracer`], which compiles away.
+    #[must_use]
+    pub fn with_tracer<T2: Tracer>(self, tracer: T2) -> InMemoryEventBus<T2> {
+        InMemoryEventBus {
+            next_id: self.next_id,
+            subscriptions: self.subscriptions,
+            background: self.background,
+            tracer,
+        }
     }
 
     /// Subscribes `handler` to events with the wire name `event_type`.
@@ -110,7 +127,7 @@ impl InMemoryEventBus {
     }
 }
 
-impl InMemoryEventBus {
+impl<T: Tracer + 'static> InMemoryEventBus<T> {
     /// Opt-in background delivery: spawns a task that delivers `envelopes` and
     /// returns at once. Inline [`EventPublisher::publish`] stays the default.
     ///
@@ -133,13 +150,22 @@ impl InMemoryEventBus {
     }
 }
 
-impl EventPublisher for InMemoryEventBus {
+impl<T: Tracer + 'static> EventPublisher for InMemoryEventBus<T> {
     async fn publish(&self, envelopes: &[EventEnvelope]) -> Result<(), BusError> {
-        self.deliver(envelopes).await
+        let mut trace = self.tracer.start(span::PUBLISH, &[]);
+        if T::ENABLED {
+            trace.set(attr::EVENT_COUNT, envelopes.len().into());
+        }
+        let result = self.deliver(envelopes).await;
+        if let Err(BusError::HandlerFailures(failures)) = &result {
+            trace.set(attr::FAILURE_COUNT, failures.len().into());
+            trace.fail("HandlerFailures");
+        }
+        result
     }
 }
 
-impl InMemoryEventBus {
+impl<T: Tracer> InMemoryEventBus<T> {
     /// Runs every handler for every envelope, isolating panics and errors.
     async fn deliver(&self, envelopes: &[EventEnvelope]) -> Result<(), BusError> {
         let mut failures = Vec::new();
