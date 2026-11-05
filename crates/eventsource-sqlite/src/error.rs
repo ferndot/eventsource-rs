@@ -3,7 +3,7 @@
 //! They reach callers boxed inside the core `Backend` error variants; downcast
 //! to [`SqliteError`] to tell a database failure from corrupt stored data.
 
-use eventsource_core::error::{CheckpointError, StoreError};
+use eventsource_core::error::{CheckpointError, SnapshotError, StoreError};
 
 /// What went wrong inside the `SQLite` adapters.
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +35,15 @@ impl SqliteError {
 impl From<SqliteError> for StoreError {
     fn from(error: SqliteError) -> Self {
         Self::Backend(Box::new(error))
+    }
+}
+
+impl From<SqliteError> for SnapshotError {
+    fn from(error: SqliteError) -> Self {
+        match error {
+            SqliteError::Corrupt { .. } => Self::Corrupt(error.to_string()),
+            SqliteError::Sqlite(_) => Self::Backend(Box::new(error)),
+        }
     }
 }
 

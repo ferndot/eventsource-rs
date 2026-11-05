@@ -6,8 +6,10 @@
 pub mod checkpoint;
 mod db;
 pub mod error;
+pub mod snapshot;
 pub mod store;
 
 pub use checkpoint::SqliteCheckpointStore;
 pub use error::SqliteError;
+pub use snapshot::SqliteSnapshotStore;
 pub use store::SqliteEventStore;

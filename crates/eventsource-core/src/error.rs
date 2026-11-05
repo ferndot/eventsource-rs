@@ -126,6 +126,25 @@ pub enum DecodeError {
     },
 }
 
+/// Error from a snapshot store. Callers treat every variant as "no usable snapshot".
+#[derive(Debug, thiserror::Error)]
+pub enum SnapshotError {
+    /// A stored snapshot could not be read back.
+    #[error("corrupt snapshot: {0}")]
+    Corrupt(String),
+    /// The backend failed. The cause is available through `source()`.
+    #[error("snapshot backend failed")]
+    Backend(#[source] BackendError),
+}
+
+/// Error building a [`crate::snapshot::SnapshotPolicy`].
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SnapshotPolicyError {
+    /// A snapshot interval of zero events is meaningless.
+    #[error("snapshot interval must be at least one event")]
+    ZeroInterval,
+}
+
 /// Error from an aggregate repository.
 ///
 /// `E` is the decider's own error type, so domain rejections stay typed.

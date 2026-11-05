@@ -26,6 +26,15 @@ pub trait Decider {
     /// Stream category for this aggregate type. Validated when a repository is built.
     const AGGREGATE_TYPE: &'static str;
 
+    /// Version of the serialized shape of [`Self::State`], recorded in snapshots.
+    ///
+    /// Bump it when the state's serialized form changes. Snapshots written
+    /// under another version are ignored and the aggregate is rebuilt from events.
+    #[must_use]
+    fn state_schema_version() -> u32 {
+        1
+    }
+
     /// The state before any event has occurred.
     fn initial_state() -> Self::State;
 

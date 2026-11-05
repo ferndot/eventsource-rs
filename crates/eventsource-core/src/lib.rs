@@ -17,6 +17,7 @@ pub mod live;
 pub mod position;
 pub mod registry;
 pub mod repository;
+pub mod snapshot;
 pub mod store;
 pub mod stream_id;
 pub mod subscription;
