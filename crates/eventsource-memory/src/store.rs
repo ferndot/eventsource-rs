@@ -17,6 +17,7 @@ use eventsource_core::ids::EventId;
 use eventsource_core::live::LiveFeed;
 use eventsource_core::store::{AggregateStore, GlobalFeed};
 use eventsource_core::version::ExpectedVersion;
+use eventsource_core::telemetry::{self, AttrValue, NoopTracer, Span, Tracer, attr};
 use eventsource_core::{Clock, EventRegistry, Position, StreamId, SystemClock, Version};
 
 #[derive(Default)]
@@ -31,12 +32,13 @@ struct Inner {
 /// All state sits behind one [`Mutex`]. The lock is never held across an
 /// `.await`, and every method completes without awaiting, so there is no
 /// interleaving to reason about inside an append.
-pub struct InMemoryEventStore {
+pub struct InMemoryEventStore<T = NoopTracer> {
     store_id: String,
     registry: Option<Arc<EventRegistry>>,
     clock: Arc<dyn Clock>,
     inner: Mutex<Inner>,
     wake: watch::Sender<u64>,
+    tracer: T,
 }
 
 impl InMemoryEventStore {
@@ -49,6 +51,25 @@ impl InMemoryEventStore {
             clock: Arc::new(SystemClock),
             inner: Mutex::new(Inner::default()),
             wake: watch::channel(0).0,
+            tracer: NoopTracer,
+        }
+    }
+
+}
+
+impl<T> InMemoryEventStore<T> {
+    /// Reports spans for appends and stream reads to `tracer`.
+    ///
+    /// Without this call the store uses [`NoopTracer`], which compiles away.
+    #[must_use]
+    pub fn with_tracer<T2: Tracer>(self, tracer: T2) -> InMemoryEventStore<T2> {
+        InMemoryEventStore {
+            store_id: self.store_id,
+            registry: self.registry,
+            clock: self.clock,
+            inner: self.inner,
+            wake: self.wake,
+            tracer,
         }
     }
 
@@ -103,7 +124,7 @@ impl Default for InMemoryEventStore {
     }
 }
 
-impl AggregateStore for InMemoryEventStore {
+impl<T: Tracer + 'static> AggregateStore for InMemoryEventStore<T> {
     async fn append(
         &self,
         stream: &StreamId,
@@ -219,7 +240,7 @@ impl AggregateStore for InMemoryEventStore {
     }
 }
 
-impl GlobalFeed for InMemoryEventStore {
+impl<T: Tracer + 'static> GlobalFeed for InMemoryEventStore<T> {
     async fn read_all(
         &self,
         from: Option<&Position>,
@@ -268,14 +289,14 @@ impl GlobalFeed for InMemoryEventStore {
 const LIVE_PAGE: NonZeroUsize = NonZeroUsize::MIN.saturating_add(255);
 
 /// Cursor state of one live stream.
-struct LiveTail {
-    store: Arc<InMemoryEventStore>,
+struct LiveTail<T> {
+    store: Arc<InMemoryEventStore<T>>,
     wake: watch::Receiver<u64>,
     after: Option<Position>,
     buffered: VecDeque<EventEnvelope>,
 }
 
-impl LiveTail {
+impl<T: Tracer + 'static> LiveTail<T> {
     /// The next event after the cursor, waiting for appends. `None` ends the stream.
     async fn next(&mut self) -> Option<EventEnvelope> {
         loop {
@@ -302,7 +323,7 @@ impl LiveTail {
     }
 }
 
-impl LiveFeed for InMemoryEventStore {
+impl<T: Tracer + 'static> LiveFeed for InMemoryEventStore<T> {
     /// Tails the feed from its current head, waking on the store's append signal.
     fn subscribe_live(self: Arc<Self>) -> BoxStream<'static, EventEnvelope> {
         // Subscribe to wake-ups before reading the head, so an append between

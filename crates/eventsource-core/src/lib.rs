@@ -22,6 +22,7 @@ pub mod snapshot;
 pub mod store;
 pub mod stream_id;
 pub mod subscription;
+pub mod telemetry;
 pub mod version;
 
 pub use aggregate::AggregateRoot;
@@ -48,4 +49,5 @@ pub use repository::{AggregateRepository, CommandContext};
 pub use store::{AggregateStore, GlobalFeed};
 pub use stream_id::{Category, StreamId};
 pub use subscription::{RetryPolicy, RunStats, StartFrom, SubscriptionConfig, SubscriptionRunner};
+pub use telemetry::{NoopTracer, Tracer};
 pub use version::{ExpectedVersion, Version};
