@@ -169,6 +169,18 @@ pub enum AtomicAppendError {
 /// Error from a read model store.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadModelError {
+    /// A conditional write found a different version than the caller expected.
+    #[error("version conflict on {model}/{id}: expected {expected}, found {actual}")]
+    VersionConflict {
+        /// The model of the document.
+        model: String,
+        /// The id of the document.
+        id: String,
+        /// The version the caller expected; 0 means "absent".
+        expected: u64,
+        /// The version stored; 0 means "absent".
+        actual: u64,
+    },
     /// The backend failed. The cause is available through `source()`.
     #[error("read model backend failed")]
     Backend(#[source] BackendError),

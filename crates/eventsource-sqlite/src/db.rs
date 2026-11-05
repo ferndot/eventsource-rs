@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS readmodels (
     model    TEXT NOT NULL,
     id       TEXT NOT NULL,
     document TEXT NOT NULL,
+    version  INTEGER NOT NULL DEFAULT 1,
+    deleted  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (model, id)
 );
 CREATE TABLE IF NOT EXISTS dead_letters (
@@ -99,6 +101,7 @@ pub(crate) fn open(path: &Path) -> Result<Connection, SqliteError> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
     conn.execute_batch(SCHEMA)?;
+    upgrade_readmodels(&conn)?;
     Ok(conn)
 }
 
@@ -116,4 +119,22 @@ pub(crate) fn store_id(conn: &Connection) -> Result<String, SqliteError> {
             row.get(0)
         })?,
     )
+}
+
+/// Adds the version and soft-delete columns to a `readmodels` table made before they existed.
+fn upgrade_readmodels(conn: &Connection) -> Result<(), SqliteError> {
+    let has_column = |name: &str| -> Result<bool, SqliteError> {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('readmodels') WHERE name = ?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )? > 0)
+    };
+    if !has_column("version")? {
+        conn.execute_batch("ALTER TABLE readmodels ADD COLUMN version INTEGER NOT NULL DEFAULT 1")?;
+    }
+    if !has_column("deleted")? {
+        conn.execute_batch("ALTER TABLE readmodels ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
 }

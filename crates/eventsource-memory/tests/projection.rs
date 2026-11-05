@@ -156,6 +156,44 @@ impl ReadModelStore for FlakyReadModels {
         self.check()?;
         self.inner.delete(model, id).await
     }
+
+    async fn put_if_version(
+        &self,
+        model: &str,
+        id: &str,
+        document: Value,
+        expected_version: u64,
+    ) -> Result<u64, ReadModelError> {
+        self.check()?;
+        self.inner
+            .put_if_version(model, id, document, expected_version)
+            .await
+    }
+
+    async fn fetch(
+        &self,
+        model: &str,
+        id: &str,
+    ) -> Result<Option<eventsource_core::readmodel::StoredDocument>, ReadModelError> {
+        self.inner.fetch(model, id).await
+    }
+
+    async fn soft_delete(&self, model: &str, id: &str) -> Result<bool, ReadModelError> {
+        self.check()?;
+        self.inner.soft_delete(model, id).await
+    }
+
+    async fn restore(&self, model: &str, id: &str) -> Result<bool, ReadModelError> {
+        self.check()?;
+        self.inner.restore(model, id).await
+    }
+
+    async fn list(
+        &self,
+        model: &str,
+    ) -> Result<Vec<eventsource_core::readmodel::StoredDocument>, ReadModelError> {
+        self.inner.list(model).await
+    }
 }
 
 /// Counts how many events reach the wrapped projector.
