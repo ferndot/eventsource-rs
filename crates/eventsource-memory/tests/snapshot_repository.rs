@@ -241,6 +241,90 @@ async fn unreadable_snapshot_store_falls_back_to_full_replay() {
             UnreadableSnapshots,
             SnapshotPolicy::every_n_events(2).expect("policy"),
         );
-    let aggregate = repo.load(id).await.expect("a snapshot read error is not fatal");
+    let aggregate = repo
+        .load(id)
+        .await
+        .expect("a snapshot read error is not fatal");
     assert_eq!(aggregate.state(), &CounterState { sum: 6 });
+}
+
+#[tokio::test]
+async fn snapshot_with_another_schema_version_is_ignored() {
+    let events: Events = Arc::new(InMemoryEventStore::new());
+    let snapshots: Snapshots = Arc::new(InMemorySnapshotStore::new());
+    let id = AggregateId::new();
+    append_good(&events, id, &[1, 2, 3, 4, 5], 0).await;
+    // Decodes fine as a CounterState, but was written under schema version 99.
+    snapshots
+        .save(snapshot(id, 3, 99, json!({ "sum": 1000 })))
+        .await
+        .expect("save snapshot");
+
+    let aggregate = snapshot_repo(&events, &snapshots, 100)
+        .load(id)
+        .await
+        .expect("load");
+    assert_eq!(aggregate.state(), &CounterState { sum: 15 });
+}
+
+/// The same aggregate after its state shape changed: state schema version 2.
+struct CounterV2;
+
+impl Decider for CounterV2 {
+    type Command = CounterCommand;
+    type Event = CounterEvent;
+    type State = CounterState;
+    type Error = Never;
+
+    const AGGREGATE_TYPE: &'static str = "Counter";
+
+    fn state_schema_version() -> u32 {
+        2
+    }
+
+    fn initial_state() -> CounterState {
+        Counter::initial_state()
+    }
+
+    fn decide(state: &CounterState, command: CounterCommand) -> Result<Vec<CounterEvent>, Never> {
+        Counter::decide(state, command)
+    }
+
+    fn evolve(state: &CounterState, event: &CounterEvent) -> CounterState {
+        Counter::evolve(state, event)
+    }
+}
+
+#[tokio::test]
+async fn snapshots_carry_the_deciders_state_schema_version() {
+    let events: Events = Arc::new(InMemoryEventStore::new());
+    let snapshots: Snapshots = Arc::new(InMemorySnapshotStore::new());
+    let id = AggregateId::new();
+    let v2 = AggregateRepository::<CounterV2, Events>::new(Arc::clone(&events))
+        .expect("repository")
+        .with_snapshots(
+            Arc::clone(&snapshots),
+            SnapshotPolicy::every_n_events(2).expect("policy"),
+        );
+    v2.execute(id, CounterCommand::Add(vec![1, 1]), &CommandContext::new())
+        .await
+        .expect("execute");
+
+    let written = snapshots
+        .load(&stream(id))
+        .await
+        .expect("load")
+        .expect("snapshot");
+    assert_eq!(written.schema_version, 2);
+
+    // A v1 reader must not trust it; overwrite state to prove the snapshot is not used.
+    snapshots
+        .save(snapshot(id, 2, 2, json!({ "sum": 500 })))
+        .await
+        .expect("save");
+    let aggregate = snapshot_repo(&events, &snapshots, 100)
+        .load(id)
+        .await
+        .expect("load");
+    assert_eq!(aggregate.state(), &CounterState { sum: 2 });
 }

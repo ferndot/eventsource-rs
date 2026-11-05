@@ -204,6 +204,9 @@ where
     async fn read_snapshot(&self, id: AggregateId, stream: &StreamId) -> Option<AggregateRoot<D>> {
         let config = self.snapshots.as_ref()?;
         let snapshot = config.store.load(stream).await.ok()??;
+        if snapshot.schema_version != D::state_schema_version() {
+            return None;
+        }
         let state = (config.decode)(snapshot.state).ok()?;
         Some(AggregateRoot::from_snapshot(id, snapshot.version, state))
     }
@@ -285,7 +288,7 @@ where
         let snapshot = Snapshot {
             stream: self.stream(aggregate.id()),
             version: aggregate.version(),
-            schema_version: 1,
+            schema_version: D::state_schema_version(),
             state,
             created_at: self.clock.now(),
         };
