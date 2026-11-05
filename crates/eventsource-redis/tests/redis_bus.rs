@@ -136,3 +136,14 @@ async fn reader_reports_malformed_entry_as_error() {
 
     assert!(matches!(result, Err(StoreError::Backend(_))));
 }
+
+#[tokio::test]
+async fn publish_to_unreachable_redis_returns_bus_error() {
+    // Port 1 refuses connections.
+    let publisher =
+        RedisPublisher::new("redis://127.0.0.1:1", RedisBusConfig::new(unique_stream())).unwrap();
+
+    let result = publisher.publish(&[envelope("OrderPlaced", 1)]).await;
+
+    assert!(matches!(result, Err(eventsource_core::error::BusError::Backend(_))));
+}

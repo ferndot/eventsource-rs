@@ -82,6 +82,10 @@ pub enum BusError {
     /// One or more handlers failed. Every handler still ran before this was returned.
     #[error("{} handler(s) failed", .0.len())]
     HandlerFailures(Vec<HandlerFailure>),
+    /// The bus itself failed, for example a broker was unreachable. No handler is to blame.
+    /// The cause is available through `source()`.
+    #[error("bus backend failed")]
+    Backend(#[source] BackendError),
 }
 
 /// Error from a checkpoint store.

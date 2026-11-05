@@ -35,14 +35,11 @@ impl EventPublisher for RedisPublisher {
             let fields = wire::encode(envelope);
             pipe.xadd(&self.config.stream, "*", &fields).ignore();
         }
-        // Placeholder error mapping; test 4 drives the real one.
-        let mut conn = self
-            .connection
-            .get()
-            .await
-            .map_err(|_| BusError::HandlerFailures(Vec::new()))?;
-        pipe.query_async::<()>(&mut conn)
-            .await
-            .map_err(|_| BusError::HandlerFailures(Vec::new()))
+        let mut conn = self.connection.get().await.map_err(backend)?;
+        pipe.query_async::<()>(&mut conn).await.map_err(backend)
     }
+}
+
+fn backend(error: redis::RedisError) -> BusError {
+    BusError::Backend(Box::new(error))
 }
