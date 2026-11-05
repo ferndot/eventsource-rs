@@ -4,6 +4,7 @@
 use chrono::Utc;
 use eventsource_core::bus::EventPublisher;
 use eventsource_core::envelope::{EventEnvelope, FeedReadOptions};
+use eventsource_core::error::BusError;
 use eventsource_core::event::{EventMeta, EventRecord};
 use eventsource_core::ids::{AggregateId, CorrelationId};
 use eventsource_core::position::Position;
@@ -168,4 +169,13 @@ async fn message_is_acknowledged_once_the_cursor_moves_past_it() {
 
     second.close().await.unwrap();
     cleanup(&config).await;
+}
+
+#[tokio::test]
+async fn publishing_to_an_unreachable_broker_is_a_backend_error() {
+    let publisher = RabbitMqPublisher::new("amqp://guest:guest@127.0.0.1:1", unique_config());
+
+    let result = publisher.publish(&[envelope("OrderPlaced", 1)]).await;
+
+    assert!(matches!(result, Err(BusError::Backend(_))), "got {result:?}");
 }
