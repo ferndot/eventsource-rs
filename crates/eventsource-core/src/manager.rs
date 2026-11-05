@@ -6,8 +6,6 @@
 //! Every registered runner is polled inside that one future.
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use futures::future::{self, BoxFuture, Either};
@@ -44,13 +42,32 @@ pub enum ManagerError {
     /// A subscription with this name is already registered.
     #[error("subscription {0:?} is already registered")]
     AlreadyRegistered(String),
+    /// The call does not apply to the subscription's current status.
+    #[error("subscription {name:?} is {status:?}")]
+    InvalidState {
+        /// The subscription.
+        name: String,
+        /// Its status when the call was refused.
+        status: SubscriptionStatus,
+    },
+    /// The [`ManagerDriver`] was dropped, so no subscription can make progress.
+    #[error("the manager driver is gone")]
+    DriverGone,
+}
+
+/// What a subscription has been asked to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Control {
+    Run,
+    Pause,
 }
 
 type RunFuture = BoxFuture<'static, Result<RunStats, SubscriptionError>>;
 type Factory = Box<dyn Fn(BoxFuture<'static, ()>) -> RunFuture + Send + Sync>;
 
 struct Entry {
-    status: watch::Receiver<SubscriptionStatus>,
+    status: Arc<watch::Sender<SubscriptionStatus>>,
+    control: watch::Sender<Control>,
 }
 
 struct Inner {
@@ -117,10 +134,12 @@ impl SubscriptionManager {
             return Err(ManagerError::AlreadyRegistered(name));
         }
         let factory: Factory = Box::new(move |stop| Box::pin(build().run(stop)));
-        let (status_tx, status_rx) = watch::channel(SubscriptionStatus::Running);
-        entries.insert(name, Entry { status: status_rx });
+        let status = Arc::new(watch::channel(SubscriptionStatus::Running).0);
+        let (control, control_rx) = watch::channel(Control::Run);
+        let task = drive(factory, control_rx, Arc::clone(&status));
+        entries.insert(name, Entry { status, control });
         // A dropped driver means nothing will ever run; the status stays as registered.
-        let _ = self.inner.tasks.send(Box::pin(drive(factory, status_tx)));
+        let _ = self.inner.tasks.send(Box::pin(task));
         Ok(())
     }
 
@@ -138,6 +157,83 @@ impl SubscriptionManager {
             .get(name)
             .map(|entry| entry.status.borrow().clone())
             .ok_or_else(|| ManagerError::UnknownSubscription(name.to_owned()))
+    }
+
+    /// Stops delivery for `name` after its current page. The checkpoint is kept.
+    ///
+    /// Returns once the runner has stopped. A paused subscription holds its
+    /// place: [`Self::resume`] continues from the saved checkpoint.
+    ///
+    /// # Errors
+    /// [`ManagerError::UnknownSubscription`], or [`ManagerError::InvalidState`]
+    /// if the subscription is not running (or failed while pausing).
+    pub async fn pause(&self, name: &str) -> Result<(), ManagerError> {
+        let (mut status, gone) = {
+            let entries = self
+                .inner
+                .entries
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let entry = lookup(&entries, name)?;
+            require(name, entry, |s| *s == SubscriptionStatus::Running)?;
+            entry.control.send_replace(Control::Pause);
+            (entry.status.subscribe(), entry.control.clone())
+        };
+        let settled = status.wait_for(|s| *s != SubscriptionStatus::Running);
+        let closed = Box::pin(gone.closed());
+        match future::select(Box::pin(settled), closed).await {
+            Either::Left((Ok(_), _)) => {}
+            _ => return Err(ManagerError::DriverGone),
+        }
+        let status = status.borrow().clone();
+        if status == SubscriptionStatus::Paused {
+            Ok(())
+        } else {
+            Err(ManagerError::InvalidState {
+                name: name.to_owned(),
+                status,
+            })
+        }
+    }
+
+    /// Restarts a paused subscription from its saved checkpoint.
+    ///
+    /// # Errors
+    /// [`ManagerError::UnknownSubscription`], or [`ManagerError::InvalidState`]
+    /// if the subscription is not paused.
+    pub fn resume(&self, name: &str) -> Result<(), ManagerError> {
+        let entries = self
+            .inner
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = lookup(&entries, name)?;
+        require(name, entry, |s| *s == SubscriptionStatus::Paused)?;
+        entry.status.send_replace(SubscriptionStatus::Running);
+        entry.control.send_replace(Control::Run);
+        Ok(())
+    }
+}
+
+fn lookup<'a>(entries: &'a HashMap<String, Entry>, name: &str) -> Result<&'a Entry, ManagerError> {
+    entries
+        .get(name)
+        .ok_or_else(|| ManagerError::UnknownSubscription(name.to_owned()))
+}
+
+fn require(
+    name: &str,
+    entry: &Entry,
+    allowed: impl Fn(&SubscriptionStatus) -> bool,
+) -> Result<(), ManagerError> {
+    let status = entry.status.borrow().clone();
+    if allowed(&status) {
+        Ok(())
+    } else {
+        Err(ManagerError::InvalidState {
+            name: name.to_owned(),
+            status,
+        })
     }
 }
 
@@ -166,11 +262,41 @@ impl ManagerDriver {
     }
 }
 
-/// Runs one subscription's runner.
-async fn drive(factory: Factory, status: watch::Sender<SubscriptionStatus>) {
-    let never: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(future::pending());
-    let _ = factory(never).await;
-    let _ = status;
+/// Resolves once `control` is no longer [`Control::Run`], or its sender is gone.
+fn stop_signal(mut control: watch::Receiver<Control>) -> BoxFuture<'static, ()> {
+    Box::pin(async move {
+        while *control.borrow_and_update() == Control::Run {
+            if control.changed().await.is_err() {
+                return;
+            }
+        }
+    })
+}
+
+/// Runs one subscription's runner, following its control signal.
+async fn drive(
+    factory: Factory,
+    mut control: watch::Receiver<Control>,
+    status: Arc<watch::Sender<SubscriptionStatus>>,
+) {
+    loop {
+        let wanted = *control.borrow_and_update();
+        match wanted {
+            Control::Run => {
+                status.send_replace(SubscriptionStatus::Running);
+                let _ = factory(stop_signal(control.clone())).await;
+                if *control.borrow() == Control::Run {
+                    return;
+                }
+            }
+            Control::Pause => {
+                status.send_replace(SubscriptionStatus::Paused);
+                if control.changed().await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -363,6 +489,44 @@ mod tests {
             manager.status("nope"),
             Err(ManagerError::UnknownSubscription("nope".to_owned()))
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn pause_stops_delivery_and_resume_continues_from_the_checkpoint() {
+        let (manager, driver) = SubscriptionManager::new();
+        let driver = tokio::spawn(driver.run());
+        let feed = Feed::default();
+        feed.append(3);
+        let (checkpoints, sink) = (Checkpoints::default(), Sink::default());
+        register(&manager, "alpha", &feed, &checkpoints, &sink);
+        eventually(|| (sink.tokens() == [1, 2, 3]).then_some(())).await;
+
+        manager.pause("alpha").await.unwrap();
+        assert_eq!(manager.status("alpha"), Ok(SubscriptionStatus::Paused));
+        feed.append(3);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            sink.tokens(),
+            [1, 2, 3],
+            "nothing is delivered while paused"
+        );
+        let paused = checkpoints.get("alpha").unwrap();
+        assert_eq!(paused.position, Some(Position::new("fake", 3)));
+        assert_eq!(paused.events_processed, 3);
+
+        manager.resume("alpha").unwrap();
+        assert_eq!(manager.status("alpha"), Ok(SubscriptionStatus::Running));
+        eventually(|| (sink.tokens().len() >= 6).then_some(())).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            sink.tokens(),
+            [1, 2, 3, 4, 5, 6],
+            "in order, no duplicates, no gaps"
+        );
+        let resumed = checkpoints.get("alpha").unwrap();
+        assert_eq!(resumed.position, Some(Position::new("fake", 6)));
+        assert_eq!(resumed.events_processed, 6);
         driver.abort();
     }
 }
