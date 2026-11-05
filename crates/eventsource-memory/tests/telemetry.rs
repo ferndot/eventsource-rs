@@ -1,11 +1,26 @@
 //! Telemetry wiring on the in-memory adapters.
 
-use eventsource_core::telemetry::NoopTracer;
+use eventsource_core::telemetry::span;
 use eventsource_memory::InMemoryEventStore;
+use eventsource_testing::RecordingTracer;
 
+// A no-op tracer is the store's default, and conformance.rs already runs the whole
+// suite on it, so that case is not repeated here. What is not covered elsewhere is a
+// *live* tracer: the suite must still pass with one wired in, and the run must
+// actually have reported spans (otherwise the wiring would be silently inert).
 #[tokio::test]
-async fn noop_tracer_wired_into_the_store_changes_no_behaviour() {
-    eventsource_testing::run_all(|| InMemoryEventStore::new().with_tracer(NoopTracer)).await;
+async fn a_recording_tracer_changes_no_behaviour_and_sees_the_run() {
+    let tracer = RecordingTracer::new();
+    eventsource_testing::run_all(|| InMemoryEventStore::new().with_tracer(tracer.clone())).await;
+
+    assert!(
+        !tracer.spans_named(span::APPEND).is_empty(),
+        "conformance appends events, so append spans must be recorded"
+    );
+    assert!(
+        !tracer.spans_named(span::LOAD).is_empty(),
+        "conformance reads streams, so load spans must be recorded"
+    );
 }
 
 mod recording {
