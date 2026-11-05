@@ -76,7 +76,10 @@ async fn two_tenants_with_the_same_aggregate_id_get_independent_streams() {
 
     repo(&store, a).execute(id, Add(1), &ctx).await.expect("a1");
     repo(&store, a).execute(id, Add(2), &ctx).await.expect("a2");
-    repo(&store, b).execute(id, Add(10), &ctx).await.expect("b1");
+    repo(&store, b)
+        .execute(id, Add(10), &ctx)
+        .await
+        .expect("b1");
 
     let seen_by_a = repo(&store, a).load(id).await.expect("a loads");
     let seen_by_b = repo(&store, b).load(id).await.expect("b loads");
@@ -143,13 +146,28 @@ async fn a_feed_read_filtered_by_tenant_returns_only_that_tenants_events_in_posi
     let shared = AggregateId::new();
     let ctx = CommandContext::new();
 
-    repo(&store, a).execute(shared, Add(1), &ctx).await.expect("a1");
-    repo(&store, b).execute(shared, Add(100), &ctx).await.expect("b1");
-    repo(&store, a).execute(shared, Add(2), &ctx).await.expect("a2");
+    repo(&store, a)
+        .execute(shared, Add(1), &ctx)
+        .await
+        .expect("a1");
+    repo(&store, b)
+        .execute(shared, Add(100), &ctx)
+        .await
+        .expect("b1");
+    repo(&store, a)
+        .execute(shared, Add(2), &ctx)
+        .await
+        .expect("a2");
     let unscoped: AggregateRepository<Counter, Store> =
         AggregateRepository::new(Arc::clone(&store)).expect("repo");
-    unscoped.execute(shared, Add(1000), &ctx).await.expect("none");
-    repo(&store, a).execute(AggregateId::new(), Add(3), &ctx).await.expect("a3");
+    unscoped
+        .execute(shared, Add(1000), &ctx)
+        .await
+        .expect("none");
+    repo(&store, a)
+        .execute(AggregateId::new(), Add(3), &ctx)
+        .await
+        .expect("a3");
 
     let options = FeedReadOptions {
         tenant_id: Some(a),
@@ -161,7 +179,11 @@ async fn a_feed_read_filtered_by_tenant_returns_only_that_tenants_events_in_posi
     assert_eq!(payloads.len(), 3);
     assert!(feed.iter().all(|e| e.record.meta.tenant_id == Some(a)));
     let tokens: Vec<u64> = feed.iter().map(|e| e.position.token()).collect();
-    assert_eq!(tokens, vec![1, 3, 5], "only tenant a's events, oldest first");
+    assert_eq!(
+        tokens,
+        vec![1, 3, 5],
+        "only tenant a's events, oldest first"
+    );
 }
 
 #[tokio::test]
@@ -208,9 +230,15 @@ async fn a_command_context_for_another_tenant_is_rejected_by_the_scope() {
         outcome,
         Err(RepositoryError::TenantMismatch { scope, context }) if scope == a && context == b
     ));
-    assert_eq!(repo(&store, a).stored_version(id).await.expect("v").get(), 0);
+    assert_eq!(
+        repo(&store, a).stored_version(id).await.expect("v").get(),
+        0
+    );
 
     // The same tenant in the context is fine.
     ctx.tenant_id = Some(a);
-    repo(&store, a).execute(id, Add(1), &ctx).await.expect("same tenant");
+    repo(&store, a)
+        .execute(id, Add(1), &ctx)
+        .await
+        .expect("same tenant");
 }
