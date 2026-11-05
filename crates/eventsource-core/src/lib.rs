@@ -15,6 +15,7 @@ pub mod error;
 pub mod event;
 pub mod ids;
 pub mod live;
+pub mod lock;
 pub mod position;
 pub mod registry;
 pub mod repository;
