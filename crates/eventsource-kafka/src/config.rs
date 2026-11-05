@@ -34,6 +34,10 @@ pub struct KafkaConsumerConfig {
     pub topic: String,
     /// Consumer group. Committed offsets are kept per group.
     pub group_id: String,
+    /// For feed reads: how long the first read waits for the group to assign partitions.
+    pub assignment_wait: Duration,
+    /// For feed reads: how long a read waits for records before returning an empty page.
+    pub feed_poll_wait: Duration,
 }
 
 impl KafkaConsumerConfig {
@@ -48,6 +52,8 @@ impl KafkaConsumerConfig {
             bootstrap_servers: bootstrap_servers.into(),
             topic: topic.into(),
             group_id: group_id.into(),
+            assignment_wait: Duration::from_secs(30),
+            feed_poll_wait: Duration::from_secs(1),
         }
     }
 }

@@ -2,21 +2,27 @@
 #![allow(missing_docs)]
 
 use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use eventsource_core::bus::EventPublisher;
+use eventsource_core::bus::{EventPublisher, handler};
+use eventsource_core::checkpoint::CheckpointStore;
 use eventsource_core::envelope::EventEnvelope;
 use eventsource_core::error::BusError;
 use eventsource_core::event::{EventMeta, EventRecord};
 use eventsource_core::ids::{AggregateId, CorrelationId};
 use eventsource_core::position::Position;
 use eventsource_core::stream_id::{Category, StreamId};
+use eventsource_core::subscription::{SubscriptionConfig, SubscriptionRunner};
 use eventsource_core::version::Version;
 use eventsource_kafka::{KafkaBusConfig, KafkaConsumer, KafkaConsumerConfig, KafkaPublisher};
+use eventsource_memory::{InMemoryCheckpointStore, InMemoryEventBus};
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use serde_json::json;
 
 fn bootstrap() -> String {
@@ -254,4 +260,65 @@ async fn publish_to_unreachable_broker_fails_with_backend_error_in_bounded_time(
         "took {:?}",
         started.elapsed()
     );
+}
+
+/// The checkpoint store is in-memory: a durable checkpoint store is out of scope here.
+#[tokio::test]
+async fn subscription_runner_delivers_from_kafka_and_checkpoints() {
+    let topic = create_topic(1).await;
+    let group = unique_group();
+    let sent: Vec<_> = (1..=5)
+        .map(|n| envelope_in(&new_stream(), "Step", n))
+        .collect();
+    publisher(&topic).publish(&sent).await.unwrap();
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let bus = InMemoryEventBus::new();
+    let sink = Arc::clone(&seen);
+    bus.subscribe_all(handler(move |e: EventEnvelope| {
+        let sink = Arc::clone(&sink);
+        async move {
+            sink.lock().unwrap().push(e.record.meta.event_id);
+            Ok(())
+        }
+    }));
+    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    let mut config = SubscriptionConfig::new("kafka-sub");
+    config.batch_size = NonZeroUsize::new(2).unwrap();
+
+    let mut runner = SubscriptionRunner::new(
+        consumer(&topic, &group),
+        Arc::clone(&checkpoints),
+        bus,
+        config,
+    );
+    let stats = runner.run_until_caught_up().await.unwrap();
+
+    let expected: Vec<_> = sent.iter().map(|e| e.record.meta.event_id).collect();
+    assert_eq!(*seen.lock().unwrap(), expected);
+    assert_eq!(stats.events_delivered, 5);
+    let saved = checkpoints.load("kafka-sub").await.unwrap().unwrap();
+    assert_eq!(saved.events_processed, 5);
+    assert_eq!(saved.last_event_id, expected.last().copied());
+
+    // The runner committed what it checkpointed: the group's committed offset is past all 5 records.
+    drop(runner);
+    assert_eq!(committed_offset(&topic, &group, 0), Offset::Offset(5));
+}
+
+/// The offset the group has committed for `partition`, read through a separate client.
+fn committed_offset(topic: &str, group: &str, partition: i32) -> Offset {
+    let reader: BaseConsumer = ClientConfig::new()
+        .set("bootstrap.servers", bootstrap())
+        .set("group.id", group)
+        .create()
+        .expect("offset reader");
+    let mut list = TopicPartitionList::new();
+    list.add_partition(topic, partition);
+    reader
+        .committed_offsets(list, Duration::from_secs(10))
+        .expect("committed offsets")
+        .find_partition(topic, partition)
+        .expect("partition listed")
+        .offset()
 }
