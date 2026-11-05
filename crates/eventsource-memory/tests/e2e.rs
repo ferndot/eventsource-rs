@@ -12,6 +12,7 @@ use eventsource_core::error::{
     BackendError, BusError, DecodeError, RepositoryError, StoreError, SubscriptionError,
 };
 use eventsource_core::event::{EventMeta, EventRecord};
+use eventsource_core::live::LiveFeed;
 use eventsource_core::store::{AggregateStore, GlobalFeed};
 use eventsource_core::{
     AggregateId, AggregateRepository, Category, CommandContext, CorrelationId, Decider,
@@ -692,6 +693,85 @@ async fn pending_event_ids_are_stable_across_a_failed_save() {
         ))
     ));
     assert_eq!(aggregate.uncommitted_events()[0].meta.event_id, before);
+}
+
+#[tokio::test]
+async fn live_stream_yields_only_new_events_in_order_and_survives_drop() {
+    use futures::StreamExt;
+
+    let (store, repo) = store_and_repo();
+    place_orders(&repo, 2).await;
+
+    let mut live = Arc::clone(&store).subscribe_live();
+    let abandoned = Arc::clone(&store).subscribe_live();
+
+    let writer = tokio::spawn(async move {
+        place_orders(&repo, 3).await;
+        repo
+    });
+    let tokens = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut tokens = Vec::new();
+        while tokens.len() < 3 {
+            tokens.push(live.next().await.expect("open").position.token());
+        }
+        tokens
+    })
+    .await
+    .expect("live events arrived");
+    assert_eq!(tokens, [3, 4, 5], "history is skipped, new events in order");
+    let repo = writer.await.expect("join");
+
+    // Dropping a stream must not break later appends or other streams.
+    drop(abandoned);
+    place_orders(&repo, 1).await;
+    let next = tokio::time::timeout(Duration::from_secs(5), live.next())
+        .await
+        .expect("woken by append")
+        .expect("open");
+    assert_eq!(next.position.token(), 6);
+
+    // An idle stream stays pending instead of ending or spinning.
+    let mut idle = Arc::clone(&store).subscribe_live();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), idle.next())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn background_publish_does_not_wait_isolates_panics_and_records_failures() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let reached = Arc::new(Mutex::new(false));
+    let bus = Arc::new(InMemoryEventBus::new());
+    bus.subscribe_all(handler(|_e: EventEnvelope| async { explode() }));
+    let waiter = Arc::clone(&gate);
+    bus.subscribe_all(handler(move |_e: EventEnvelope| {
+        let waiter = Arc::clone(&waiter);
+        async move {
+            waiter.notified().await;
+            Ok::<(), BackendError>(())
+        }
+    }));
+    let flag = Arc::clone(&reached);
+    bus.subscribe_all(handler(move |_e: EventEnvelope| {
+        let flag = Arc::clone(&flag);
+        async move {
+            *flag.lock().expect("lock") = true;
+            Ok::<(), BackendError>(())
+        }
+    }));
+
+    // Returns immediately although a handler is blocked on the gate.
+    bus.publish_background(vec![envelope_for(&OrderEvent::OrderPlaced { total: 1 })]);
+    assert!(bus.take_background_failures().is_empty());
+
+    gate.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), bus.flush())
+        .await
+        .expect("flushed");
+    assert!(*reached.lock().expect("lock"), "later handler still ran");
+    assert_eq!(bus.take_background_failures().len(), 1, "panic recorded");
 }
 
 // ---- Helpers ----

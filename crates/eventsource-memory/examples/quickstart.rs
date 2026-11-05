@@ -74,12 +74,20 @@ async fn main() {
 
     let id = AggregateId::new();
     let ctx = CommandContext::new();
-    repo.execute(id, CounterCommand::Add(2), &ctx).await.expect("add 2");
-    repo.execute(id, CounterCommand::Add(3), &ctx).await.expect("add 3");
+    repo.execute(id, CounterCommand::Add(2), &ctx)
+        .await
+        .expect("add 2");
+    repo.execute(id, CounterCommand::Add(3), &ctx)
+        .await
+        .expect("add 3");
 
     let counter = repo.get(id).await.expect("load").expect("exists");
     assert_eq!(*counter.state(), 5);
 
     // The decider rejects this, so nothing is appended.
-    assert!(repo.execute(id, CounterCommand::Add(0), &ctx).await.is_err());
+    assert!(
+        repo.execute(id, CounterCommand::Add(0), &ctx)
+            .await
+            .is_err()
+    );
 }
