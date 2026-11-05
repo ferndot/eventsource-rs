@@ -9,6 +9,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::error::ReadModelError;
+use crate::projection::ReadModelChange;
 
 /// Durable storage for read model documents, keyed by `(model, id)`.
 ///
@@ -36,6 +37,29 @@ pub trait ReadModelStore: Send + Sync {
         model: &str,
         id: &str,
     ) -> impl Future<Output = Result<(), ReadModelError>> + Send;
+
+    /// Writes `changes` in order.
+    ///
+    /// The default applies them one by one. Adapters with transactions should
+    /// override it so a page's changes land together or not at all.
+    fn apply_changes(
+        &self,
+        changes: &[ReadModelChange],
+    ) -> impl Future<Output = Result<(), ReadModelError>> + Send {
+        async move {
+            for change in changes {
+                match change {
+                    ReadModelChange::Upsert {
+                        model,
+                        id,
+                        document,
+                    } => self.upsert(model, id, document.clone()).await?,
+                    ReadModelChange::Delete { model, id } => self.delete(model, id).await?,
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 impl<T: ReadModelStore> ReadModelStore for Arc<T> {
@@ -62,5 +86,12 @@ impl<T: ReadModelStore> ReadModelStore for Arc<T> {
         id: &str,
     ) -> impl Future<Output = Result<(), ReadModelError>> + Send {
         (**self).delete(model, id)
+    }
+
+    fn apply_changes(
+        &self,
+        changes: &[ReadModelChange],
+    ) -> impl Future<Output = Result<(), ReadModelError>> + Send {
+        (**self).apply_changes(changes)
     }
 }
