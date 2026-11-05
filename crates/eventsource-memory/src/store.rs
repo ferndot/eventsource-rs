@@ -16,8 +16,8 @@ use eventsource_core::event::EventRecord;
 use eventsource_core::ids::EventId;
 use eventsource_core::live::LiveFeed;
 use eventsource_core::store::{AggregateStore, GlobalFeed};
-use eventsource_core::version::ExpectedVersion;
 use eventsource_core::telemetry::{NoopTracer, Span, Tracer, attr, span, start_stream_span};
+use eventsource_core::version::ExpectedVersion;
 use eventsource_core::{Clock, EventRegistry, Position, StreamId, SystemClock, Version};
 
 #[derive(Default)]
@@ -54,7 +54,6 @@ impl InMemoryEventStore {
             tracer: NoopTracer,
         }
     }
-
 }
 
 impl<T> InMemoryEventStore<T> {
@@ -151,7 +150,7 @@ impl<T: Tracer + 'static> AggregateStore for InMemoryEventStore<T> {
         options: StreamReadOptions,
     ) -> Result<Vec<EventEnvelope>, StoreError> {
         let mut trace = start_stream_span(&self.tracer, span::LOAD, stream, None);
-        let result = self.read_stream_events(stream, &options);
+        let result = Ok(self.read_stream_events(stream, &options));
         match &result {
             Ok(events) => {
                 trace.set(attr::EVENT_COUNT, events.len().into());
@@ -250,7 +249,7 @@ impl<T: Tracer> InMemoryEventStore<T> {
         &self,
         stream: &StreamId,
         options: &StreamReadOptions,
-    ) -> Result<Vec<EventEnvelope>, StoreError> {
+    ) -> Vec<EventEnvelope> {
         let inner = self.lock();
         let indices: &[usize] = inner.streams.get(stream).map_or(&[], Vec::as_slice);
         let total = indices.len();
@@ -269,16 +268,15 @@ impl<T: Tracer> InMemoryEventStore<T> {
             .map_or(total, |v| usize::try_from(v.get()).unwrap_or(usize::MAX))
             .min(total);
         if start >= end {
-            return Ok(Vec::new());
+            return Vec::new();
         }
 
         let slice = indices[start..end].iter().map(|&i| inner.events[i].clone());
         let limit = options.limit.map_or(usize::MAX, NonZeroUsize::get);
-        let selected = match options.direction {
+        match options.direction {
             ReadDirection::Forward => slice.take(limit).collect(),
             ReadDirection::Backward => slice.rev().take(limit).collect(),
-        };
-        Ok(selected)
+        }
     }
 }
 

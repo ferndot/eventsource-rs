@@ -67,7 +67,10 @@ impl RecordingTracer {
     /// The spans named `name`.
     #[must_use]
     pub fn spans_named(&self, name: &str) -> Vec<RecordedSpan> {
-        self.spans().into_iter().filter(|s| s.name == name).collect()
+        self.spans()
+            .into_iter()
+            .filter(|s| s.name == name)
+            .collect()
     }
 
     /// The one span named `name`.
@@ -106,8 +109,10 @@ impl Span for RecordingSpan {
     fn fail(&mut self, description: &str) {
         self.with(|span| {
             span.failure = Some(description.to_owned());
-            span.attributes
-                .insert(attr::ERROR_TYPE.to_owned(), RecordedValue::Str(description.to_owned()));
+            span.attributes.insert(
+                attr::ERROR_TYPE.to_owned(),
+                RecordedValue::Str(description.to_owned()),
+            );
         });
     }
 }

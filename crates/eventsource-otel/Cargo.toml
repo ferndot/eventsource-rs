@@ -1,0 +1,17 @@
+[package]
+name = "eventsource-otel"
+description = "Tracer adapter that emits eventsource spans through the `tracing` crate, ready for an OpenTelemetry layer."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+eventsource-core = { path = "../eventsource-core" }
+tracing.workspace = true
+
+[dev-dependencies]
+eventsource-memory = { path = "../eventsource-memory" }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

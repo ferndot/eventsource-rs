@@ -86,7 +86,11 @@ mod subscription {
                 Category::new("Order").expect("category"),
             );
             store
-                .append(&stream, vec![record("OrderPlaced")], ExpectedVersion::NoStream)
+                .append(
+                    &stream,
+                    vec![record("OrderPlaced")],
+                    ExpectedVersion::NoStream,
+                )
                 .await
                 .expect("append");
         }
@@ -108,7 +112,9 @@ mod subscription {
         let tracer = RecordingTracer::new();
         let store = store_with_events(3).await;
         let bus = Arc::new(InMemoryEventBus::new());
-        bus.subscribe_all(handler(|_: EventEnvelope| async { Ok::<(), BackendError>(()) }));
+        bus.subscribe_all(handler(|_: EventEnvelope| async {
+            Ok::<(), BackendError>(())
+        }));
         let mut runner = SubscriptionRunner::new(
             Arc::clone(&store),
             InMemoryCheckpointStore::new(),
@@ -145,12 +151,18 @@ mod subscription {
         )
         .with_tracer(tracer.clone());
 
-        runner.run_until_caught_up().await.expect_err("handler fails");
+        runner
+            .run_until_caught_up()
+            .await
+            .expect_err("handler fails");
 
         let page = tracer.only_span(span::SUBSCRIPTION_PAGE);
         assert_eq!(page.get(attr::BATCH_SIZE), Some(&RecordedValue::U64(2)));
         assert_eq!(page.get(attr::FAILURE_COUNT), Some(&RecordedValue::U64(3)));
-        assert!(page.failure.is_some(), "a page that exhausts retries is failed");
+        assert!(
+            page.failure.is_some(),
+            "a page that exhausts retries is failed"
+        );
     }
 }
 
@@ -184,11 +196,16 @@ mod publish {
             .await
             .expect("append");
 
-        bus.publish(&appended.envelopes).await.expect_err("handler fails");
+        bus.publish(&appended.envelopes)
+            .await
+            .expect_err("handler fails");
 
         let publish = tracer.only_span(span::PUBLISH);
         assert_eq!(publish.get(attr::EVENT_COUNT), Some(&RecordedValue::U64(2)));
-        assert_eq!(publish.get(attr::FAILURE_COUNT), Some(&RecordedValue::U64(2)));
+        assert_eq!(
+            publish.get(attr::FAILURE_COUNT),
+            Some(&RecordedValue::U64(2))
+        );
         assert!(publish.failure.is_some());
     }
 }
@@ -242,10 +259,16 @@ mod privacy {
             config,
         )
         .with_tracer(tracer.clone());
-        runner.run_until_caught_up().await.expect_err("handler fails");
+        runner
+            .run_until_caught_up()
+            .await
+            .expect_err("handler fails");
 
         let spans = tracer.spans();
-        assert!(spans.len() >= 4, "append, load, publish and page spans: {spans:?}");
+        assert!(
+            spans.len() >= 4,
+            "append, load, publish and page spans: {spans:?}"
+        );
         let everything = format!("{spans:?}");
         assert!(
             !everything.contains(SENTINEL),

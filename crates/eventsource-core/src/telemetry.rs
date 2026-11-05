@@ -112,7 +112,11 @@ impl Tracer for NoopTracer {
     type Span = NoopSpan;
 
     #[inline]
-    fn start(&self, _name: &'static str, _attributes: &[(&'static str, AttrValue<'_>)]) -> NoopSpan {
+    fn start(
+        &self,
+        _name: &'static str,
+        _attributes: &[(&'static str, AttrValue<'_>)],
+    ) -> NoopSpan {
         NoopSpan
     }
 }

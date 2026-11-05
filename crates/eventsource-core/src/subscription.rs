@@ -21,8 +21,8 @@ use crate::envelope::{EventEnvelope, FeedReadOptions};
 use crate::error::{BusError, SubscriptionError};
 use crate::ids::TenantId;
 use crate::store::GlobalFeed;
-use crate::telemetry::{NoopTracer, Span, Tracer, attr, span};
 use crate::stream_id::Category;
+use crate::telemetry::{NoopTracer, Span, Tracer, attr, span};
 
 /// Where a subscription starts when it has no saved checkpoint.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -341,18 +341,18 @@ where
         failures: &mut u32,
     ) -> Result<(), SubscriptionError> {
         let Some(store) = &self.dead_letters else {
-            return self.deliver(batch, failures).await.map_err(|(attempts, last)| {
-                SubscriptionError::Handler {
+            return self
+                .deliver(batch, failures)
+                .await
+                .map_err(|(attempts, last)| SubscriptionError::Handler {
                     name: self.config.name.clone(),
                     attempts,
                     last,
-                }
-            });
+                });
         };
         for envelope in batch {
-            let Err((attempts, last)) = self
-                .deliver(std::slice::from_ref(envelope), failures)
-                .await
+            let Err((attempts, last)) =
+                self.deliver(std::slice::from_ref(envelope), failures).await
             else {
                 continue;
             };
