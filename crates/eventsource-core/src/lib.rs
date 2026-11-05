@@ -16,6 +16,7 @@ pub mod event;
 pub mod ids;
 pub mod live;
 pub mod lock;
+pub mod outbox;
 pub mod position;
 pub mod registry;
 pub mod repository;
@@ -38,13 +39,17 @@ pub use envelope::{
     AppendResult, EventEnvelope, FeedReadOptions, ReadDirection, StreamReadOptions,
 };
 pub use error::{
-    BusError, CheckpointError, DeadLetterError, DecodeError, RepositoryError, StoreError,
-    SubscriptionError,
+    AtomicAppendError, BusError, CheckpointError, DeadLetterError, DecodeError, OutboxError,
+    RepositoryError, StoreError, SubscriptionError,
 };
 pub use event::{DomainEvent, EventMeta, EventRecord};
 pub use ids::{AggregateId, CausationId, CorrelationId, EventId, TenantId};
 pub use live::LiveFeed;
 pub use lock::{LockError, LockLease, LockName, LockOwner, LockStore, LockTtl, LockValueError};
+pub use outbox::{
+    NewOutboxMessage, OutboxAppend, OutboxId, OutboxMessage, OutboxPublisher, OutboxStatus,
+    OutboxStore, RelayReport, relay,
+};
 pub use position::Position;
 pub use registry::EventRegistry;
 pub use repository::{AggregateRepository, CommandContext};

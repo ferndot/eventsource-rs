@@ -141,6 +141,31 @@ pub enum DeadLetterError {
     Backend(#[source] BackendError),
 }
 
+/// Error from an outbox store.
+#[derive(Debug, thiserror::Error)]
+pub enum OutboxError {
+    /// The message was rejected before it was stored.
+    #[error("invalid outbox message: {0}")]
+    Invalid(String),
+    /// The store has no outbox to write to.
+    #[error("no outbox is configured")]
+    NotConfigured,
+    /// The backend failed. The cause is available through `source()`.
+    #[error("outbox backend failed")]
+    Backend(#[source] BackendError),
+}
+
+/// Error from appending events and outbox messages together. Either way nothing was stored.
+#[derive(Debug, thiserror::Error)]
+pub enum AtomicAppendError {
+    /// The event append failed.
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    /// An outbox message was rejected or could not be stored.
+    #[error(transparent)]
+    Outbox(#[from] OutboxError),
+}
+
 /// Error from a snapshot store. Callers treat every variant as "no usable snapshot".
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
@@ -185,6 +210,9 @@ pub enum RepositoryError<E: std::error::Error + 'static> {
         /// What was wrong.
         detail: String,
     },
+    /// An outbox message was rejected or could not be stored. No events were stored.
+    #[error(transparent)]
+    Outbox(#[from] OutboxError),
     /// No events exist for the aggregate.
     #[error("aggregate {id} not found")]
     NotFound {

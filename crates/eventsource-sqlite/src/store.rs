@@ -10,8 +10,9 @@ use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use eventsource_core::envelope::{
     AppendResult, EventEnvelope, FeedReadOptions, ReadDirection, StreamReadOptions,
 };
-use eventsource_core::error::{PositionError, StoreError};
+use eventsource_core::error::{AtomicAppendError, PositionError, StoreError};
 use eventsource_core::event::{EventMeta, EventRecord};
+use eventsource_core::outbox::{NewOutboxMessage, OutboxAppend};
 use eventsource_core::store::{AggregateStore, GlobalFeed};
 use eventsource_core::{EventRegistry, ExpectedVersion, Position, StreamId, Version};
 
@@ -77,14 +78,31 @@ impl SqliteEventStore {
         Ok(Position::new(self.store_id.clone(), token))
     }
 
+    /// The time to stamp new events with. It never decreases: clamp to the newest stored value.
+    fn next_stored_at(tx: &rusqlite::Transaction<'_>) -> Result<DateTime<Utc>, SqliteError> {
+        let newest: Option<String> = tx
+            .query_row(
+                "SELECT stored_at FROM events ORDER BY position DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut stored_at = Utc::now();
+        if let Some(newest) = newest {
+            stored_at = stored_at.max(parse_time(&newest, "stored_at")?);
+        }
+        Ok(stored_at)
+    }
+
     fn append_blocking(
         &self,
         stream: &StreamId,
         events: Vec<EventRecord>,
         expected: ExpectedVersion,
-    ) -> Result<AppendResult, StoreError> {
+        messages: &[NewOutboxMessage],
+    ) -> Result<AppendResult, AtomicAppendError> {
         if events.is_empty() {
-            return Err(StoreError::EmptyAppend);
+            return Err(StoreError::EmptyAppend.into());
         }
         for record in &events {
             self.check_registered(&record.event_type)?;
@@ -110,22 +128,11 @@ impl SqliteEventStore {
                 stream: stream.clone(),
                 expected,
                 actual: current,
-            });
+            }
+            .into());
         }
 
-        // `stored_at` never decreases: clamp to the newest stored value.
-        let newest: Option<String> = tx
-            .query_row(
-                "SELECT stored_at FROM events ORDER BY position DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(SqliteError::from)?;
-        let mut stored_at = Utc::now();
-        if let Some(newest) = newest {
-            stored_at = stored_at.max(parse_time(&newest, "stored_at")?);
-        }
+        let stored_at = Self::next_stored_at(&tx)?;
         let stored_at_text = format_time(stored_at);
 
         // The stream row must exist before events reference it.
@@ -173,9 +180,9 @@ impl SqliteEventStore {
                     Err(rusqlite::Error::SqliteFailure(code, _))
                         if code.code == rusqlite::ErrorCode::ConstraintViolation =>
                     {
-                        return Err(StoreError::DuplicateEvent(meta.event_id));
+                        return Err(StoreError::DuplicateEvent(meta.event_id).into());
                     }
-                    Err(other) => return Err(SqliteError::from(other).into()),
+                    Err(other) => return Err(StoreError::from(SqliteError::from(other)).into()),
                 }
                 envelopes.push(EventEnvelope {
                     stream: stream.clone(),
@@ -185,6 +192,11 @@ impl SqliteEventStore {
                     record,
                 });
             }
+        }
+        // Same transaction as the events: if a message is rejected, dropping
+        // `tx` below rolls the events back.
+        for message in messages {
+            crate::outbox::insert(&tx, message)?;
         }
         tx.commit().map_err(SqliteError::from)?;
 
@@ -257,7 +269,12 @@ impl AggregateStore for SqliteEventStore {
         events: Vec<EventRecord>,
         expected: ExpectedVersion,
     ) -> Result<AppendResult, StoreError> {
-        self.append_blocking(stream, events, expected)
+        self.append_blocking(stream, events, expected, &[])
+            .map_err(|error| match error {
+                AtomicAppendError::Store(error) => error,
+                // No messages were passed, so the outbox cannot have failed.
+                AtomicAppendError::Outbox(error) => StoreError::Backend(Box::new(error)),
+            })
     }
 
     async fn read_stream(
@@ -296,6 +313,18 @@ impl AggregateStore for SqliteEventStore {
             .optional()
             .map_err(SqliteError::from)?;
         Ok(version.map_or(Ok(Version::ZERO), |v| to_version(v, "version"))?)
+    }
+}
+
+impl OutboxAppend for SqliteEventStore {
+    async fn append_with_outbox(
+        &self,
+        stream: &StreamId,
+        events: Vec<EventRecord>,
+        expected: ExpectedVersion,
+        messages: Vec<NewOutboxMessage>,
+    ) -> Result<AppendResult, AtomicAppendError> {
+        self.append_blocking(stream, events, expected, &messages)
     }
 }
 

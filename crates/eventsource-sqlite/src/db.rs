@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS dead_letters (
     attempts       INTEGER NOT NULL,
     UNIQUE (subscription, event_id)
 );
+CREATE TABLE IF NOT EXISTS outbox (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    destination TEXT    NOT NULL,
+    payload     TEXT    NOT NULL,
+    stream_id   TEXT,
+    status      TEXT    NOT NULL DEFAULT 'pending',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_error  TEXT
+);
+CREATE INDEX IF NOT EXISTS outbox_pending ON outbox (status, id);
 ";
 
 /// Opens `path`, creating the file and schema if needed.

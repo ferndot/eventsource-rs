@@ -7,14 +7,16 @@ use std::sync::{Arc, Mutex, PoisonError};
 use futures::stream::{self, BoxStream};
 use tokio::sync::watch;
 
+use crate::outbox::InMemoryOutboxStore;
 use eventsource_core::Category;
 use eventsource_core::envelope::{
     AppendResult, EventEnvelope, FeedReadOptions, ReadDirection, StreamReadOptions,
 };
-use eventsource_core::error::{PositionError, StoreError};
+use eventsource_core::error::{AtomicAppendError, OutboxError, PositionError, StoreError};
 use eventsource_core::event::EventRecord;
 use eventsource_core::ids::EventId;
 use eventsource_core::live::LiveFeed;
+use eventsource_core::outbox::{NewOutboxMessage, OutboxAppend};
 use eventsource_core::store::{AggregateStore, GlobalFeed};
 use eventsource_core::telemetry::{NoopTracer, Span, Tracer, attr, span, start_stream_span};
 use eventsource_core::version::ExpectedVersion;
@@ -38,6 +40,7 @@ pub struct InMemoryEventStore<T = NoopTracer> {
     clock: Arc<dyn Clock>,
     inner: Mutex<Inner>,
     wake: watch::Sender<u64>,
+    outbox: Option<InMemoryOutboxStore>,
     tracer: T,
 }
 
@@ -51,6 +54,7 @@ impl InMemoryEventStore {
             clock: Arc::new(SystemClock),
             inner: Mutex::new(Inner::default()),
             wake: watch::channel(0).0,
+            outbox: None,
             tracer: NoopTracer,
         }
     }
@@ -68,6 +72,7 @@ impl<T> InMemoryEventStore<T> {
             clock: self.clock,
             inner: self.inner,
             wake: self.wake,
+            outbox: self.outbox,
             tracer,
         }
     }
@@ -96,6 +101,15 @@ impl<T> InMemoryEventStore<T> {
     #[must_use]
     pub fn with_registry(mut self, registry: Arc<EventRegistry>) -> Self {
         self.registry = Some(registry);
+        self
+    }
+
+    /// Writes the outbox messages of [`OutboxAppend::append_with_outbox`] to `outbox`.
+    ///
+    /// Without this call, `append_with_outbox` fails with [`OutboxError::NotConfigured`].
+    #[must_use]
+    pub fn with_outbox(mut self, outbox: InMemoryOutboxStore) -> Self {
+        self.outbox = Some(outbox);
         self
     }
 
@@ -169,6 +183,29 @@ impl<T: Tracer + 'static> AggregateStore for InMemoryEventStore<T> {
         Ok(Version::new(
             inner.streams.get(stream).map_or(0, Vec::len) as u64
         ))
+    }
+}
+
+impl<T: Tracer + 'static> OutboxAppend for InMemoryEventStore<T> {
+    async fn append_with_outbox(
+        &self,
+        stream: &StreamId,
+        events: Vec<EventRecord>,
+        expected: ExpectedVersion,
+        messages: Vec<NewOutboxMessage>,
+    ) -> Result<AppendResult, AtomicAppendError> {
+        let outbox = self.outbox.as_ref().ok_or(OutboxError::NotConfigured)?;
+        // The outbox lock is held for the whole step, so no reader sees the
+        // events without their messages. Nothing awaits while it is held.
+        let mut state = outbox.lock();
+        for message in &messages {
+            message.validate()?;
+        }
+        let appended = self.append_events(stream, events, expected)?;
+        for message in messages {
+            state.push(message);
+        }
+        Ok(appended)
     }
 }
 
