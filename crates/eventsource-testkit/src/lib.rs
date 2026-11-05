@@ -9,3 +9,8 @@ mod recording;
 
 pub use builder::EventBuilder;
 pub use recording::RecordingEventBus;
+mod scenario;
+
+#[cfg(test)]
+mod fixtures;
+pub use scenario::{DeciderScenario, ScenarioResult};
