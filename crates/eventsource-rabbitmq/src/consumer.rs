@@ -1,7 +1,7 @@
 //! Consumer side: reads a `RabbitMQ` queue as a [`GlobalFeed`].
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eventsource_core::envelope::{EventEnvelope, FeedReadOptions};
@@ -106,7 +106,7 @@ impl RabbitMqConsumer {
             .into());
         }
         let tags: Vec<u64> = {
-            let mut state = self.state.lock().expect("state lock is not poisoned");
+            let mut state = lock_state(&self.state);
             let later = state.pending.split_off(&(position.token() + 1));
             std::mem::replace(&mut state.pending, later)
                 .into_values()
@@ -137,6 +137,12 @@ fn start_token() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
     ms << 20
+}
+
+/// Locks the delivery state. A panic in another holder does not make the state
+/// unusable: every update leaves it consistent, so the poison flag is ignored.
+fn lock_state(state: &Mutex<Delivered>) -> MutexGuard<'_, Delivered> {
+    state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A queue cannot be filtered by tenant or category without consuming the rest.
@@ -173,7 +179,7 @@ impl GlobalFeed for RabbitMqConsumer {
                 .map_err(backend)?;
             let Some(message) = got else { break };
             let token = {
-                let mut state = self.state.lock().expect("state lock is not poisoned");
+                let mut state = lock_state(&self.state);
                 state.last += 1;
                 let token = state.last;
                 state.pending.insert(token, message.delivery.delivery_tag);
@@ -186,8 +192,47 @@ impl GlobalFeed for RabbitMqConsumer {
     }
 
     async fn current_position(&self) -> Result<Option<Position>, StoreError> {
-        let state = self.state.lock().expect("state lock is not poisoned");
+        let state = lock_state(&self.state);
         let handed_out = state.last > state.started;
         Ok(handed_out.then(|| Position::new(self.store_id.clone(), state.last)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn poisoned() -> Arc<Mutex<Delivered>> {
+        let state = Arc::new(Mutex::new(Delivered {
+            started: 10,
+            last: 12,
+            pending: BTreeMap::from([(11, 1), (12, 2)]),
+        }));
+        let holder = Arc::clone(&state);
+        let result = std::thread::spawn(move || {
+            let _guard = holder.lock().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+        assert!(result.is_err());
+        assert!(state.is_poisoned());
+        state
+    }
+
+    #[test]
+    fn a_poisoned_lock_does_not_panic_the_next_operation() {
+        let state = poisoned();
+        let guard = lock_state(&state);
+        assert_eq!(guard.last, 12);
+        assert_eq!(guard.pending.len(), 2);
+    }
+
+    #[test]
+    fn a_poisoned_lock_still_allows_mutation() {
+        let state = poisoned();
+        lock_state(&state).last += 1;
+        assert_eq!(lock_state(&state).last, 13);
     }
 }

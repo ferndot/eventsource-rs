@@ -10,6 +10,7 @@ pub type BackendError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Error parsing a stream category or stream id.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum StreamIdError {
     /// The category is empty or contains disallowed characters.
     #[error("invalid stream category {0:?}: must be non-empty and match [A-Za-z0-9_.-]+")]
@@ -24,6 +25,7 @@ pub enum StreamIdError {
 
 /// Error comparing positions.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PositionError {
     /// The positions come from different stores and cannot be ordered.
     #[error("cannot order positions from different stores: {left:?} and {right:?}")]
@@ -37,6 +39,7 @@ pub enum PositionError {
 
 /// Error from event type registration.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RegistryError {
     /// A wire name is already owned by a different event type.
     #[error("event type {name:?} is already registered to a different type")]
@@ -48,6 +51,7 @@ pub enum RegistryError {
 
 /// Error from an event store.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum StoreError {
     /// The stream's version did not match the expectation.
     #[error("concurrency conflict on {stream}: expected {expected:?}, stream is at {actual:?}")]
@@ -78,6 +82,7 @@ pub enum StoreError {
 
 /// Error from an event bus.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BusError {
     /// One or more handlers failed. Every handler still ran before this was returned.
     #[error("{} handler(s) failed", .0.len())]
@@ -90,6 +95,7 @@ pub enum BusError {
 
 /// Error from a checkpoint store.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum CheckpointError {
     /// The backend failed. The cause is available through `source()`.
     #[error("checkpoint backend failed")]
@@ -108,6 +114,7 @@ pub enum CheckpointError {
 
 /// Error turning a stored record back into a domain event.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// The payload does not match the event type.
     #[error("payload does not match the event type: {0}")]
@@ -132,6 +139,7 @@ pub enum DecodeError {
 
 /// Error from a dead-letter store.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DeadLetterError {
     /// No dead-letter store is configured.
     #[error("no dead-letter store is configured")]
@@ -143,6 +151,7 @@ pub enum DeadLetterError {
 
 /// Error from an outbox store.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum OutboxError {
     /// The message was rejected before it was stored.
     #[error("invalid outbox message: {0}")]
@@ -157,6 +166,7 @@ pub enum OutboxError {
 
 /// Error from appending events and outbox messages together. Either way nothing was stored.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AtomicAppendError {
     /// The event append failed.
     #[error(transparent)]
@@ -168,6 +178,7 @@ pub enum AtomicAppendError {
 
 /// Error from a read model store.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ReadModelError {
     /// A conditional write found a different version than the caller expected.
     #[error("version conflict on {model}/{id}: expected {expected}, found {actual}")]
@@ -188,6 +199,7 @@ pub enum ReadModelError {
 
 /// Error from a snapshot store. Callers treat every variant as "no usable snapshot".
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SnapshotError {
     /// A stored snapshot could not be read back.
     #[error("corrupt snapshot: {0}")]
@@ -199,6 +211,7 @@ pub enum SnapshotError {
 
 /// Error building a [`crate::snapshot::SnapshotPolicy`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SnapshotPolicyError {
     /// A snapshot interval of zero events is meaningless.
     #[error("snapshot interval must be at least one event")]
@@ -209,6 +222,7 @@ pub enum SnapshotPolicyError {
 ///
 /// `E` is the decider's own error type, so domain rejections stay typed.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RepositoryError<E: std::error::Error + 'static> {
     /// The decider rejected the command.
     #[error("command rejected")]
@@ -251,6 +265,7 @@ pub enum RepositoryError<E: std::error::Error + 'static> {
 
 /// Error from a subscription runner. Each variant leaves the checkpoint unchanged for the failed page.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SubscriptionError {
     /// A page could not be delivered after every allowed attempt. Restarting redelivers it.
     #[error("subscription {name:?}: handlers failed after {attempts} attempts")]

@@ -266,3 +266,121 @@ where
     }
     Ok(report)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// A store holding fixed pending messages and recording what the relay marks.
+    struct FakeStore {
+        pending: Vec<OutboxMessage>,
+        published: Mutex<Vec<OutboxId>>,
+        failed: Mutex<Vec<(OutboxId, String)>>,
+    }
+
+    impl FakeStore {
+        fn with_messages(count: u64) -> Self {
+            let pending = (1..=count)
+                .map(|n| OutboxMessage {
+                    id: OutboxId::new(n),
+                    destination: "orders".to_owned(),
+                    payload: Value::Null,
+                    stream: None,
+                    attempts: 0,
+                    status: OutboxStatus::Pending,
+                })
+                .collect();
+            Self {
+                pending,
+                published: Mutex::default(),
+                failed: Mutex::default(),
+            }
+        }
+    }
+
+    impl OutboxStore for FakeStore {
+        async fn enqueue(&self, _message: NewOutboxMessage) -> Result<OutboxId, OutboxError> {
+            unreachable!("relay never enqueues")
+        }
+
+        async fn fetch_pending(&self, limit: usize) -> Result<Vec<OutboxMessage>, OutboxError> {
+            Ok(self.pending.iter().take(limit).cloned().collect())
+        }
+
+        async fn mark_published(&self, id: OutboxId) -> Result<(), OutboxError> {
+            self.published.lock().unwrap().push(id);
+            Ok(())
+        }
+
+        async fn mark_failed(&self, id: OutboxId, error: &str) -> Result<(), OutboxError> {
+            self.failed.lock().unwrap().push((id, error.to_owned()));
+            Ok(())
+        }
+    }
+
+    /// Accepts messages until `fail_at` (an outbox id), which it rejects.
+    struct FakePublisher {
+        fail_at: Option<u64>,
+    }
+
+    impl OutboxPublisher for FakePublisher {
+        async fn publish(&self, message: &OutboxMessage) -> Result<(), BackendError> {
+            if Some(message.id.get()) == self.fail_at {
+                Err("broker down".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn default_report_is_empty() {
+        let report = RelayReport::default();
+        assert_eq!(report.published, 0);
+        assert!(report.failed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn report_counts_every_published_message() {
+        let store = FakeStore::with_messages(3);
+        let report = relay(&store, &FakePublisher { fail_at: None }, 10).await.unwrap();
+        assert_eq!(report.published, 3);
+        assert!(report.failed.is_empty());
+        assert_eq!(store.published.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn report_respects_the_limit() {
+        let store = FakeStore::with_messages(5);
+        let report = relay(&store, &FakePublisher { fail_at: None }, 2).await.unwrap();
+        assert_eq!(report.published, 2);
+    }
+
+    #[tokio::test]
+    async fn report_records_the_failure_and_stops() {
+        let store = FakeStore::with_messages(4);
+        let report = relay(&store, &FakePublisher { fail_at: Some(3) }, 10).await.unwrap();
+        assert_eq!(report.published, 2);
+        assert_eq!(
+            report.failed,
+            vec![RelayFailure {
+                id: OutboxId::new(3),
+                error: "broker down".to_owned(),
+            }]
+        );
+        assert_eq!(
+            store.failed.lock().unwrap().as_slice(),
+            &[(OutboxId::new(3), "broker down".to_owned())]
+        );
+    }
+
+    #[test]
+    fn failure_equality_compares_id_and_error() {
+        let a = RelayFailure { id: OutboxId::new(1), error: "x".to_owned() };
+        assert_eq!(a, a.clone());
+        assert_ne!(a, RelayFailure { id: OutboxId::new(2), error: "x".to_owned() });
+        assert_ne!(a, RelayFailure { id: OutboxId::new(1), error: "y".to_owned() });
+    }
+}

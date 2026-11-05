@@ -11,6 +11,7 @@ use eventsource_core::lock::LockError;
 
 /// What went wrong inside the `SQLite` adapters.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SqliteError {
     /// `SQLite` reported a failure (I/O, locking, constraint, ...).
     #[error("sqlite failure")]

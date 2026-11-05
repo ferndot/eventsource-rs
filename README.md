@@ -4,7 +4,7 @@ Event sourcing for Rust, ported from eventsource-py with idiomatic Rust patterns
 
 State is never stored directly. Each aggregate is a stream of immutable events, and its current state is whatever you get by folding those events over an initial state. Commands are checked against that state by a pure function, and the resulting events are appended to the store with optimistic concurrency.
 
-> **Status:** early (`0.1.0`). The API is still moving. Storage backends beyond in-memory are not implemented yet.
+> **Status:** early (`0.1.0`). The API is still moving. Persistent backends exist (SQLite and PostgreSQL), as do bus adapters (Redis Streams, RabbitMQ, Kafka). Snapshots, dead-letter queues, a transactional outbox, distributed locks, read models, multi-tenancy, telemetry, and a testkit are implemented. See the roadmap for what is still missing.
 
 ## Features
 
@@ -21,9 +21,16 @@ State is never stored directly. Each aggregate is a stream of immutable events, 
 
 | Crate | Purpose |
 | --- | --- |
-| [`eventsource-core`](crates/eventsource-core) | Domain types and ports: events, streams, positions, `Decider`, `AggregateRoot`, `AggregateRepository`, bus, checkpoints, subscriptions. Depends on no storage. |
-| [`eventsource-memory`](crates/eventsource-memory) | In-memory `InMemoryEventStore`, `InMemoryEventBus`, and `InMemoryCheckpointStore`. For tests, examples, and single-process apps. Nothing persists across restarts. |
-| [`eventsource-testing`](crates/eventsource-testing) | Conformance suites that any store backend can run through `run_all`. |
+| [`eventsource-core`](crates/eventsource-core) | Domain types and ports: events, streams, positions, `Decider`, `AggregateRoot`, `AggregateRepository`, bus, checkpoints, subscriptions, snapshots, dead letters, outbox, locks, read models, telemetry. Depends on no storage. |
+| [`eventsource-memory`](crates/eventsource-memory) | In-process implementations of every port (store, bus, checkpoints, snapshots, dead letters, outbox, locks, read models). For tests, examples, and single-process apps. Nothing persists across restarts. |
+| [`eventsource-sqlite`](crates/eventsource-sqlite) | SQLite-backed event store plus checkpoint, snapshot, dead-letter, lock, outbox, and read-model stores. |
+| [`eventsource-postgres`](crates/eventsource-postgres) | PostgreSQL-backed event store plus checkpoint, snapshot, dead-letter, lock, outbox, and read-model stores. |
+| [`eventsource-redis`](crates/eventsource-redis) | Redis Streams publisher and stream reader (a `GlobalFeed`) for fanning events out over a bus. |
+| [`eventsource-rabbitmq`](crates/eventsource-rabbitmq) | RabbitMQ publisher and queue consumer with acknowledgement on checkpoint. |
+| [`eventsource-kafka`](crates/eventsource-kafka) | Kafka publisher and partition-ordered, manual-commit consumer. |
+| [`eventsource-otel`](crates/eventsource-otel) | Tracer adapter that emits spans through `tracing`, ready for an OpenTelemetry layer. |
+| [`eventsource-testing`](crates/eventsource-testing) | Conformance suites that any backend can run through `run_all`, plus a manual clock and recording helpers. |
+| [`eventsource-testkit`](crates/eventsource-testkit) | Testing toolkit for domains: decider scenarios, an in-memory harness, a recording bus, and event builders. |
 
 ## Quick start
 
@@ -156,12 +163,11 @@ The workspace sets `unsafe_code = "forbid"` and enables clippy's pedantic lints.
 
 Not yet implemented:
 
-- Snapshots
-- Read-model categories
-- Dead-letter queue for failing handlers
-- Persistent backends (Postgres, SQLite, Redis, Kafka)
-- Schema migrations
-- Multi-tenant context helpers
+- Subscription management (listing, pausing, and resetting subscriptions at runtime)
+- Read-model querying (stores hold read models but offer no query layer)
+- Coordination between processes (leader election and work partitioning beyond plain locks)
+- A schema migration subsystem
+- Bus features such as consumer-group reclaim of abandoned messages
 
 ## License
 

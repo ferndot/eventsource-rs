@@ -295,6 +295,8 @@ impl AggregateStore for PostgresEventStore {
                 AtomicAppendError::Store(error) => error,
                 // No messages were passed, so the outbox cannot have failed.
                 AtomicAppendError::Outbox(error) => StoreError::Backend(Box::new(error)),
+                // `AtomicAppendError` is `#[non_exhaustive]`: surface anything new as a backend failure.
+                other => StoreError::Backend(Box::new(other)),
             })
     }
 

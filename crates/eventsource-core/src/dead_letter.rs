@@ -125,6 +125,7 @@ impl DeadLetterStore for NoDeadLetters {
 
 /// Error from [`retry_parked`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RetryParkedError {
     /// The handlers failed again. The entry stays parked.
     #[error("handlers failed again; the entry stays parked")]

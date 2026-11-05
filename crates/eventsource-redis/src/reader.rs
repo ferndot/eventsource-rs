@@ -119,3 +119,72 @@ impl GlobalFeed for RedisStreamReader {
             .map_err(backend)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use chrono::Utc;
+    use eventsource_core::event::{EventMeta, EventRecord};
+    use eventsource_core::ids::{AggregateId, CorrelationId};
+    use eventsource_core::stream_id::{Category, StreamId};
+    use eventsource_core::version::Version;
+
+    use super::*;
+
+    fn reader() -> RedisStreamReader {
+        RedisStreamReader::new("redis://127.0.0.1:1", "events").expect("valid url")
+    }
+
+    fn entry(id: &str, envelope: Option<&str>) -> redis::streams::StreamId {
+        let mut map = HashMap::new();
+        if let Some(text) = envelope {
+            map.insert(
+                ENVELOPE_FIELD.to_owned(),
+                redis::Value::BulkString(text.as_bytes().to_vec()),
+            );
+        }
+        redis::streams::StreamId { id: id.to_owned(), map, ..Default::default() }
+    }
+
+    fn sample() -> EventEnvelope {
+        let meta = EventMeta::new(Utc::now(), CorrelationId::new());
+        EventEnvelope {
+            record: EventRecord::new(meta, "OrderPlaced", serde_json::json!({ "n": 1 })),
+            stream: StreamId::new(AggregateId::new(), Category::new("Order").unwrap()),
+            stream_version: Version::new(1),
+            position: Position::new("source", 1),
+            stored_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn decodes_an_entry_into_an_envelope_with_a_redis_position() {
+        let original = sample();
+        let fields = wire::encode(&original);
+        let text = &fields.iter().find(|(n, _)| *n == ENVELOPE_FIELD).unwrap().1;
+        let decoded = reader().decode(&entry("12-3", Some(text))).expect("valid entry");
+        assert_eq!(decoded.record, original.record);
+        assert_eq!(decoded.position, Position::new("redis:events", (12 << 16) | 3));
+    }
+
+    #[test]
+    fn entry_without_envelope_is_missing_envelope() {
+        let error = reader().decode(&entry("12-3", None)).err().expect("must fail");
+        assert!(matches!(error, DecodeEntryError::MissingEnvelope { ref id } if id == "12-3"));
+    }
+
+    #[test]
+    fn garbage_envelope_is_invalid_envelope() {
+        let error = reader().decode(&entry("12-3", Some("garbage"))).err().expect("must fail");
+        assert!(matches!(error, DecodeEntryError::InvalidEnvelope { .. }));
+    }
+
+    #[test]
+    fn valid_envelope_with_unusable_entry_id_is_invalid_entry_id() {
+        let fields = wire::encode(&sample());
+        let text = &fields.iter().find(|(n, _)| *n == ENVELOPE_FIELD).unwrap().1;
+        let error = reader().decode(&entry("nonsense", Some(text))).err().expect("must fail");
+        assert!(matches!(error, DecodeEntryError::InvalidEntryId { ref id } if id == "nonsense"));
+    }
+}

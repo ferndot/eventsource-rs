@@ -13,6 +13,7 @@ use crate::error::BackendError;
 
 /// Why a lock value was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum LockValueError {
     /// The lock name was empty or whitespace.
     #[error("lock name must not be empty")]
@@ -136,6 +137,7 @@ impl LockLease {
 
 /// Error from a lock store.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LockError {
     /// The backend failed. The cause is available through `source()`.
     #[error("lock backend failed")]
