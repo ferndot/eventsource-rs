@@ -85,3 +85,23 @@ async fn two_tenants_with_the_same_aggregate_id_get_independent_streams() {
     assert_eq!(seen_by_b.state().sum, 10);
     assert_eq!(seen_by_b.version().get(), 1);
 }
+
+#[tokio::test]
+async fn a_repository_scoped_to_one_tenant_cannot_load_another_tenants_aggregate() {
+    let store: Store = Arc::new(InMemoryEventStore::new());
+    let (a, b) = (TenantId::new(), TenantId::new());
+    let id = AggregateId::new();
+    repo(&store, b)
+        .execute(id, Add(7), &CommandContext::new())
+        .await
+        .expect("b writes");
+
+    let as_a = repo(&store, a);
+    assert!(as_a.get(id).await.expect("not an error").is_none());
+    assert!(matches!(
+        as_a.load(id).await,
+        Err(eventsource_core::error::RepositoryError::NotFound { .. })
+    ));
+    assert_eq!(as_a.stored_version(id).await.expect("version").get(), 0);
+    assert_eq!(repo(&store, b).load(id).await.expect("b").state().sum, 7);
+}
