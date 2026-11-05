@@ -43,6 +43,7 @@ impl Projector for OrderSummaries {
                     doc["tracking"] = payload["tracking"].clone();
                     doc
                 }
+                "OrderCancelled" => return Ok(vec![ReadModelChange::delete(MODEL, id)]),
                 _ => return Ok(vec![]),
             };
             Ok(vec![ReadModelChange::upsert(MODEL, id, document)])
@@ -247,4 +248,129 @@ async fn checkpoint_does_not_advance_when_the_read_model_write_fails() {
     );
     let saved = checkpoints.load("order-summaries").await.expect("load");
     assert_eq!(saved.map(|c| c.events_processed), Some(2));
+}
+
+fn runner_for(
+    events: &Arc<InMemoryEventStore>,
+    checkpoints: &Arc<InMemoryCheckpointStore>,
+    read_models: &Arc<InMemoryReadModelStore>,
+) -> SubscriptionRunner<
+    Arc<InMemoryEventStore>,
+    Arc<InMemoryCheckpointStore>,
+    ProjectionSink<Arc<InMemoryReadModelStore>, OrderSummaries>,
+> {
+    SubscriptionRunner::new(
+        Arc::clone(events),
+        Arc::clone(checkpoints),
+        ProjectionSink::new(Arc::clone(read_models), OrderSummaries),
+        SubscriptionConfig::new("order-summaries"),
+    )
+}
+
+#[tokio::test]
+async fn rerunning_over_applied_events_leaves_the_read_model_unchanged() {
+    let events = Arc::new(InMemoryEventStore::new());
+    let read_models = Arc::new(InMemoryReadModelStore::new());
+    let stream = order_stream();
+    let id = stream.aggregate_id().to_string();
+    append(
+        &events,
+        &stream,
+        vec![event("OrderPlaced", json!({"total": 7}))],
+    )
+    .await;
+    append(
+        &events,
+        &stream,
+        vec![event("OrderShipped", json!({"tracking": "T-2"}))],
+    )
+    .await;
+
+    let first = Arc::new(InMemoryCheckpointStore::new());
+    runner_for(&events, &first, &read_models)
+        .run_until_caught_up()
+        .await
+        .expect("first run");
+    let before = read_models.get(MODEL, &id).await.expect("get");
+    assert_eq!(
+        before,
+        Some(json!({"status": "shipped", "total": 7, "tracking": "T-2"}))
+    );
+
+    // A fresh checkpoint store replays the whole feed over the same read model.
+    let replay = Arc::new(InMemoryCheckpointStore::new());
+    let stats = runner_for(&events, &replay, &read_models)
+        .run_until_caught_up()
+        .await
+        .expect("replay");
+    assert_eq!(stats.events_delivered, 2, "the events were delivered again");
+    assert_eq!(read_models.get(MODEL, &id).await.expect("get"), before);
+}
+
+#[tokio::test]
+async fn a_terminal_event_removes_the_document() {
+    let events = Arc::new(InMemoryEventStore::new());
+    let read_models = Arc::new(InMemoryReadModelStore::new());
+    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    let (kept, cancelled) = (order_stream(), order_stream());
+    let cancelled_id = cancelled.aggregate_id().to_string();
+    append(
+        &events,
+        &kept,
+        vec![event("OrderPlaced", json!({"total": 1}))],
+    )
+    .await;
+    append(
+        &events,
+        &cancelled,
+        vec![event("OrderPlaced", json!({"total": 2}))],
+    )
+    .await;
+
+    let mut runner = runner_for(&events, &checkpoints, &read_models);
+    runner.run_until_caught_up().await.expect("first page");
+    assert!(
+        read_models
+            .get(MODEL, &cancelled_id)
+            .await
+            .expect("get")
+            .is_some()
+    );
+
+    // Later page: the delete lands in a page of its own.
+    append(
+        &events,
+        &cancelled,
+        vec![event("OrderCancelled", json!({}))],
+    )
+    .await;
+    runner.run_until_caught_up().await.expect("second page");
+    assert_eq!(
+        read_models.get(MODEL, &cancelled_id).await.expect("get"),
+        None
+    );
+    assert!(
+        read_models
+            .get(MODEL, &kept.aggregate_id().to_string())
+            .await
+            .expect("get")
+            .is_some(),
+        "other orders are untouched"
+    );
+
+    // Placed and cancelled inside one page: the document never appears.
+    let fleeting = order_stream();
+    let fleeting_id = fleeting.aggregate_id().to_string();
+    append(
+        &events,
+        &fleeting,
+        vec![event("OrderPlaced", json!({"total": 3}))],
+    )
+    .await;
+    append(&events, &fleeting, vec![event("OrderCancelled", json!({}))]).await;
+    runner.run_until_caught_up().await.expect("third page");
+    assert_eq!(
+        read_models.get(MODEL, &fleeting_id).await.expect("get"),
+        None
+    );
 }
