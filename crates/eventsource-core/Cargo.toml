@@ -1,0 +1,18 @@
+[package]
+name = "eventsource-core"
+description = "Core event sourcing types and ports: events, streams, positions, decider aggregates, repository."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[lints]
+workspace = true

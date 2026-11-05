@@ -1,0 +1,301 @@
+//! Subscription runner: reads the global feed in pages and delivers each page to a sink.
+//!
+//! Delivery is at-least-once. A page is checkpointed only after the sink
+//! succeeds for all of it, so a failure or restart delivers that page again.
+//! Handlers must therefore be idempotent. Pages are delivered one at a time, in
+//! feed order, and the runner spawns no tasks of its own.
+
+use std::future::Future;
+use std::num::{NonZeroU32, NonZeroUsize};
+use std::pin::Pin;
+use std::time::Duration;
+
+use futures::FutureExt;
+use futures::future::{self, Either};
+use tokio::sync::watch;
+
+use crate::bus::EventPublisher;
+use crate::checkpoint::{Checkpoint, CheckpointStore};
+use crate::envelope::{EventEnvelope, FeedReadOptions};
+use crate::error::SubscriptionError;
+use crate::ids::TenantId;
+use crate::store::GlobalFeed;
+use crate::stream_id::Category;
+
+/// Where a subscription starts when it has no saved checkpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StartFrom {
+    /// From the first event in the feed.
+    #[default]
+    Beginning,
+    /// After the newest event. Existing history is skipped.
+    Latest,
+}
+
+/// Retry policy for a page that the sink fails to deliver.
+///
+/// This is the only retry policy in the library. Handlers do not retry on their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    /// Total attempts per page, including the first.
+    pub max_attempts: NonZeroU32,
+    /// Wait before the second attempt. Doubles after each failure.
+    pub initial_backoff: Duration,
+    /// Upper bound on the wait between attempts.
+    pub max_backoff: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: NonZeroU32::new(5).expect("5 is nonzero"),
+            initial_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(10),
+        }
+    }
+}
+
+const DEFAULT_BATCH_SIZE: NonZeroUsize = match NonZeroUsize::new(100) {
+    Some(size) => size,
+    None => NonZeroUsize::MIN,
+};
+
+/// Settings for one named subscription. Set the public fields directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubscriptionConfig {
+    /// Checkpoint name. Two runners with the same name share progress, so use one per consumer.
+    pub name: String,
+    /// Maximum events per page.
+    pub batch_size: NonZeroUsize,
+    /// How long to wait for new events when no wake signal arrives.
+    pub poll_interval: Duration,
+    /// Where to start when no checkpoint exists.
+    pub start_from: StartFrom,
+    /// Retry policy for a failing page.
+    pub retry: RetryPolicy,
+    /// Only deliver events for this tenant.
+    pub tenant_id: Option<TenantId>,
+    /// Only deliver events for this category.
+    pub category: Option<Category>,
+}
+
+impl SubscriptionConfig {
+    /// A config named `name` with the defaults: batches of 100, a one-second poll, and no filters.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            batch_size: DEFAULT_BATCH_SIZE,
+            poll_interval: Duration::from_secs(1),
+            start_from: StartFrom::default(),
+            retry: RetryPolicy::default(),
+            tenant_id: None,
+            category: None,
+        }
+    }
+}
+
+/// What a runner has delivered so far.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunStats {
+    /// Events delivered and checkpointed.
+    pub events_delivered: u64,
+    /// Pages delivered and checkpointed.
+    pub batches: u64,
+}
+
+/// Outcome of waiting for new work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wait {
+    /// Something may have changed, or the poll interval passed. Read the feed again.
+    Work,
+    /// Shutdown was requested.
+    Stop,
+}
+
+/// Delivers the feed to a sink, checkpointing after each page.
+///
+/// `F` is the feed, `C` the checkpoint store, and `P` the sink, usually an
+/// [`crate::bus::EventPublisher`] such as the in-memory bus.
+pub struct SubscriptionRunner<F, C, P> {
+    feed: F,
+    checkpoints: C,
+    sink: P,
+    config: SubscriptionConfig,
+    wake: Option<watch::Receiver<u64>>,
+    cursor: Option<Checkpoint>,
+    stats: RunStats,
+}
+
+impl<F, C, P> SubscriptionRunner<F, C, P>
+where
+    F: GlobalFeed,
+    C: CheckpointStore,
+    P: EventPublisher,
+{
+    /// A runner that has not read anything yet.
+    pub fn new(feed: F, checkpoints: C, sink: P, config: SubscriptionConfig) -> Self {
+        Self {
+            feed,
+            checkpoints,
+            sink,
+            config,
+            wake: None,
+            cursor: None,
+            stats: RunStats::default(),
+        }
+    }
+
+    /// Wakes the runner when the store signals new events, so it does not wait out the poll interval.
+    ///
+    /// The value is ignored; only the change matters. The poll interval still
+    /// applies as a backstop for writers the signal does not cover.
+    #[must_use]
+    pub fn with_wake(mut self, wake: watch::Receiver<u64>) -> Self {
+        self.wake = Some(wake);
+        self
+    }
+
+    /// Delivers pages as they arrive until `shutdown` completes.
+    ///
+    /// A page already in flight is finished before the runner stops, so no
+    /// handler is cancelled partway through an event.
+    ///
+    /// # Errors
+    /// [`SubscriptionError::Handler`] if a page fails after every attempt. The
+    /// checkpoint then stays before that page, so a restart redelivers it.
+    /// Feed and checkpoint failures are returned at once and are not retried.
+    pub async fn run(
+        mut self,
+        shutdown: impl Future<Output = ()> + Send,
+    ) -> Result<RunStats, SubscriptionError> {
+        let mut shutdown = Box::pin(shutdown);
+        self.ensure_started().await?;
+        loop {
+            if (&mut shutdown).now_or_never().is_some() {
+                return Ok(self.stats);
+            }
+            if self.process_page().await? {
+                continue;
+            }
+            if self.wait_for_work(&mut shutdown).await == Wait::Stop {
+                return Ok(self.stats);
+            }
+        }
+    }
+
+    /// Delivers pages until the feed has nothing new, then returns. For tests and batch jobs.
+    ///
+    /// # Errors
+    /// As [`Self::run`].
+    pub async fn run_until_caught_up(&mut self) -> Result<RunStats, SubscriptionError> {
+        self.ensure_started().await?;
+        while self.process_page().await? {}
+        Ok(self.stats)
+    }
+
+    /// Loads the saved checkpoint, or creates one according to `start_from`.
+    async fn ensure_started(&mut self) -> Result<(), SubscriptionError> {
+        if self.cursor.is_some() {
+            return Ok(());
+        }
+        let cursor = match self.checkpoints.load(&self.config.name).await? {
+            Some(saved) => saved,
+            None => match self.config.start_from {
+                StartFrom::Beginning => Checkpoint::default(),
+                StartFrom::Latest => {
+                    // Save now, so a restart does not jump to a newer position.
+                    let fresh = Checkpoint {
+                        position: self.feed.current_position().await?,
+                        ..Checkpoint::default()
+                    };
+                    self.checkpoints
+                        .save(&self.config.name, fresh.clone())
+                        .await?;
+                    fresh
+                }
+            },
+        };
+        self.cursor = Some(cursor);
+        Ok(())
+    }
+
+    /// Reads and delivers one page. Returns `false` when the feed had nothing new.
+    async fn process_page(&mut self) -> Result<bool, SubscriptionError> {
+        let cursor = self.cursor.clone().unwrap_or_default();
+        let options = FeedReadOptions {
+            tenant_id: self.config.tenant_id,
+            category: self.config.category.clone(),
+            limit: Some(self.config.batch_size),
+        };
+        let batch = self
+            .feed
+            .read_all(cursor.position.as_ref(), options)
+            .await?;
+        let Some(last) = batch.last() else {
+            return Ok(false);
+        };
+        let delivered = u64::try_from(batch.len()).unwrap_or(u64::MAX);
+        let next = Checkpoint {
+            position: Some(last.position.clone()),
+            last_event_id: Some(last.record.meta.event_id),
+            events_processed: cursor.events_processed.saturating_add(delivered),
+        };
+
+        self.deliver(&batch).await?;
+        self.checkpoints
+            .save(&self.config.name, next.clone())
+            .await?;
+
+        self.cursor = Some(next);
+        self.stats.events_delivered = self.stats.events_delivered.saturating_add(delivered);
+        self.stats.batches += 1;
+        Ok(true)
+    }
+
+    /// Hands a page to the sink, retrying the whole page under the retry policy.
+    async fn deliver(&self, batch: &[EventEnvelope]) -> Result<(), SubscriptionError> {
+        let policy = self.config.retry;
+        let mut backoff = policy.initial_backoff;
+        let mut attempt: u32 = 1;
+        loop {
+            let error = match self.sink.publish(batch).await {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            };
+            if attempt >= policy.max_attempts.get() {
+                return Err(SubscriptionError::Handler {
+                    name: self.config.name.clone(),
+                    attempts: attempt,
+                    last: error,
+                });
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = backoff.saturating_mul(2).min(policy.max_backoff);
+            attempt += 1;
+        }
+    }
+
+    /// Waits for a wake signal, the poll interval, or shutdown, whichever comes first.
+    async fn wait_for_work<S: Future<Output = ()>>(&mut self, shutdown: &mut Pin<Box<S>>) -> Wait {
+        let poll = self.config.poll_interval;
+        let sleep = Box::pin(tokio::time::sleep(poll));
+        let wake = Box::pin(async {
+            match self.wake.as_mut() {
+                Some(rx) => rx.changed().await.is_ok(),
+                None => future::pending::<bool>().await,
+            }
+        });
+        let (outcome, wake_closed) =
+            match future::select(shutdown, future::select(wake, sleep)).await {
+                Either::Left(_) => (Wait::Stop, false),
+                // A closed sender means no more wake-ups; fall back to polling only.
+                Either::Right((Either::Left((changed, _)), _)) => (Wait::Work, !changed),
+                Either::Right((Either::Right(_), _)) => (Wait::Work, false),
+            };
+        if wake_closed {
+            self.wake = None;
+        }
+        outcome
+    }
+}
