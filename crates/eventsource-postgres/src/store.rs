@@ -28,7 +28,9 @@ const SELECT_COLUMNS: &str = "position, stream_id, stream_version, event_id, eve
 /// A durable [`AggregateStore`] and [`GlobalFeed`] on a `PostgreSQL` schema.
 ///
 /// Each handle owns one connection behind a lock; calls run to completion.
-/// Several handles (or processes) may share one schema.
+/// Several handles (or processes) may share one schema: every append runs in a
+/// transaction that first takes a schema-wide advisory lock, so writers are
+/// serialized by `PostgreSQL`, exactly as `SQLite` serializes them.
 pub struct PostgresEventStore {
     store_id: String,
     registry: Option<Arc<EventRegistry>>,
@@ -94,6 +96,16 @@ impl PostgresEventStore {
 
         let mut client = self.lock().await;
         let tx = client.transaction().await.map_err(PostgresError::from)?;
+        // One writer per schema at a time, until commit. This makes the version
+        // check and the insert one atomic step, and it makes positions (taken
+        // from a sequence) become visible in order, so a feed reader never
+        // skips an event that commits late.
+        tx.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended('eventsource:append:' || current_schema(), 0))",
+            &[],
+        )
+        .await
+        .map_err(PostgresError::from)?;
 
         let current = tx
             .query_opt(

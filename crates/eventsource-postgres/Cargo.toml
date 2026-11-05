@@ -18,6 +18,7 @@ uuid.workspace = true
 [dev-dependencies]
 eventsource-memory = { path = "../eventsource-memory" }
 eventsource-testing = { path = "../eventsource-testing" }
+futures.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
