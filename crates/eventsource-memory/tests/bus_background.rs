@@ -83,3 +83,32 @@ async fn flush_waits_for_background_delivery_and_handlers_see_envelopes_in_order
 
     assert_eq!(*seen.lock().expect("lock"), [1, 2, 3]);
 }
+
+fn explode() -> Result<(), BackendError> {
+    panic!("handler exploded")
+}
+
+#[tokio::test]
+async fn background_panic_is_isolated_and_recorded_as_a_failure() {
+    let reached = Arc::new(AtomicBool::new(false));
+    let bus = Arc::new(InMemoryEventBus::new());
+    bus.subscribe_all(handler(|_e: EventEnvelope| async { explode() }));
+    let flag = Arc::clone(&reached);
+    bus.subscribe_all(handler(move |_e: EventEnvelope| {
+        let flag = Arc::clone(&flag);
+        async move {
+            flag.store(true, Ordering::SeqCst);
+            Ok::<(), BackendError>(())
+        }
+    }));
+
+    bus.publish_background(vec![envelope(1)]);
+    tokio::time::timeout(WAIT, bus.flush())
+        .await
+        .expect("flushed");
+
+    assert!(reached.load(Ordering::SeqCst), "later handler still ran");
+    let failures = bus.take_background_failures();
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].error.to_string().contains("handler exploded"));
+}

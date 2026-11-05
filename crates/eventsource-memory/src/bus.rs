@@ -46,7 +46,7 @@ struct Subscription {
 pub struct InMemoryEventBus {
     next_id: AtomicU64,
     subscriptions: RwLock<Vec<Subscription>>,
-    background: BackgroundDelivery,
+    background: Arc<BackgroundDelivery>,
 }
 
 impl InMemoryEventBus {
@@ -117,14 +117,19 @@ impl InMemoryEventBus {
     /// Must be called inside a Tokio runtime.
     pub fn publish_background(self: &Arc<Self>, envelopes: Vec<EventEnvelope>) {
         let bus = Arc::clone(self);
-        self.background.spawn(async move {
-            let _ = bus.deliver(&envelopes).await;
-        });
+        self.background
+            .spawn(async move { bus.deliver(&envelopes).await });
     }
 
     /// Waits until every background delivery started so far has finished.
     pub async fn flush(&self) {
         self.background.flush().await;
+    }
+
+    /// Takes the failures recorded by background deliveries.
+    #[must_use]
+    pub fn take_background_failures(&self) -> Vec<HandlerFailure> {
+        self.background.take_failures()
     }
 }
 
