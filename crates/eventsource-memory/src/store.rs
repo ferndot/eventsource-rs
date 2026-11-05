@@ -17,7 +17,7 @@ use eventsource_core::ids::EventId;
 use eventsource_core::live::LiveFeed;
 use eventsource_core::store::{AggregateStore, GlobalFeed};
 use eventsource_core::version::ExpectedVersion;
-use eventsource_core::telemetry::{self, AttrValue, NoopTracer, Span, Tracer, attr};
+use eventsource_core::telemetry::{NoopTracer, Span, Tracer, attr, span, start_stream_span};
 use eventsource_core::{Clock, EventRegistry, Position, StreamId, SystemClock, Version};
 
 #[derive(Default)]
@@ -131,6 +131,55 @@ impl<T: Tracer + 'static> AggregateStore for InMemoryEventStore<T> {
         events: Vec<EventRecord>,
         expected: ExpectedVersion,
     ) -> Result<AppendResult, StoreError> {
+        let mut trace = start_stream_span(&self.tracer, span::APPEND, stream, Some(events.len()));
+        let result = self.append_events(stream, events, expected);
+        match &result {
+            Ok(appended) => {
+                trace.set(attr::VERSION, appended.new_version.get().into());
+                if let Some(last) = appended.envelopes.last() {
+                    trace.set(attr::POSITION, last.position.token().into());
+                }
+            }
+            Err(error) => trace.fail(error_kind(error)),
+        }
+        result
+    }
+
+    async fn read_stream(
+        &self,
+        stream: &StreamId,
+        options: StreamReadOptions,
+    ) -> Result<Vec<EventEnvelope>, StoreError> {
+        let mut trace = start_stream_span(&self.tracer, span::LOAD, stream, None);
+        let result = self.read_stream_events(stream, &options);
+        match &result {
+            Ok(events) => {
+                trace.set(attr::EVENT_COUNT, events.len().into());
+                if T::ENABLED {
+                    let version = self.lock().streams.get(stream).map_or(0, Vec::len);
+                    trace.set(attr::VERSION, version.into());
+                }
+            }
+            Err(error) => trace.fail(error_kind(error)),
+        }
+        result
+    }
+
+    async fn stream_version(&self, stream: &StreamId) -> Result<Version, StoreError> {
+        let inner = self.lock();
+        Ok(Version::new(
+            inner.streams.get(stream).map_or(0, Vec::len) as u64
+        ))
+    }
+}
+
+impl<T: Tracer> InMemoryEventStore<T> {
+    fn append_events(
+        &self,
+        stream: &StreamId,
+        events: Vec<EventRecord>,
+        expected: ExpectedVersion,
+    ) -> Result<AppendResult, StoreError> {
         if events.is_empty() {
             return Err(StoreError::EmptyAppend);
         }
@@ -197,10 +246,10 @@ impl<T: Tracer + 'static> AggregateStore for InMemoryEventStore<T> {
         })
     }
 
-    async fn read_stream(
+    fn read_stream_events(
         &self,
         stream: &StreamId,
-        options: StreamReadOptions,
+        options: &StreamReadOptions,
     ) -> Result<Vec<EventEnvelope>, StoreError> {
         let inner = self.lock();
         let indices: &[usize] = inner.streams.get(stream).map_or(&[], Vec::as_slice);
@@ -231,12 +280,16 @@ impl<T: Tracer + 'static> AggregateStore for InMemoryEventStore<T> {
         };
         Ok(selected)
     }
+}
 
-    async fn stream_version(&self, stream: &StreamId) -> Result<Version, StoreError> {
-        let inner = self.lock();
-        Ok(Version::new(
-            inner.streams.get(stream).map_or(0, Vec::len) as u64
-        ))
+/// A short, payload-free name for a store error, safe to put on a span.
+fn error_kind(error: &StoreError) -> &'static str {
+    match error {
+        StoreError::EmptyAppend => "EmptyAppend",
+        StoreError::UnregisteredEventType(_) => "UnregisteredEventType",
+        StoreError::ConcurrencyConflict { .. } => "ConcurrencyConflict",
+        StoreError::DuplicateEvent(_) => "DuplicateEvent",
+        _ => "StoreError",
     }
 }
 

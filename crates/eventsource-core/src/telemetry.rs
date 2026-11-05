@@ -125,3 +125,34 @@ impl<T: Tracer> Tracer for std::sync::Arc<T> {
         (**self).start(name, attributes)
     }
 }
+
+/// Starts a span for an operation on `stream`, with its id, aggregate type and, if known, event count.
+///
+/// Builds no attributes (and allocates nothing) when the tracer is disabled.
+pub fn start_stream_span<T: Tracer>(
+    tracer: &T,
+    name: &'static str,
+    stream: &crate::StreamId,
+    event_count: Option<usize>,
+) -> T::Span {
+    if !T::ENABLED {
+        return tracer.start(name, &[]);
+    }
+    let id = stream.to_string();
+    let category = AttrValue::Str(stream.category().as_str());
+    let id = AttrValue::Str(&id);
+    match event_count {
+        Some(count) => tracer.start(
+            name,
+            &[
+                (attr::STREAM_ID, id),
+                (attr::AGGREGATE_TYPE, category),
+                (attr::EVENT_COUNT, count.into()),
+            ],
+        ),
+        None => tracer.start(
+            name,
+            &[(attr::STREAM_ID, id), (attr::AGGREGATE_TYPE, category)],
+        ),
+    }
+}
