@@ -126,6 +126,14 @@ pub enum DecodeError {
     },
 }
 
+/// Error building a [`crate::snapshot::SnapshotPolicy`].
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SnapshotPolicyError {
+    /// A snapshot interval of zero events is meaningless.
+    #[error("snapshot interval must be at least one event")]
+    ZeroInterval,
+}
+
 /// Error from an aggregate repository.
 ///
 /// `E` is the decider's own error type, so domain rejections stay typed.
