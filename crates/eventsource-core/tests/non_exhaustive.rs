@@ -39,7 +39,7 @@ fn store_error(error: &StoreError) -> &'static str {
     match error {
         StoreError::ConcurrencyConflict { .. } => "ConcurrencyConflict",
         StoreError::DuplicateEvent { .. } => "DuplicateEvent",
-        StoreError::EmptyAppend { .. } => "EmptyAppend",
+        StoreError::EmptyAppend => "EmptyAppend",
         StoreError::UnregisteredEventType { .. } => "UnregisteredEventType",
         StoreError::Position { .. } => "Position",
         StoreError::Backend { .. } => "Backend",
@@ -74,7 +74,7 @@ fn decode_error(error: &DecodeError) -> &'static str {
 
 fn dead_letter_error(error: &DeadLetterError) -> &'static str {
     match error {
-        DeadLetterError::NotConfigured { .. } => "NotConfigured",
+        DeadLetterError::NotConfigured => "NotConfigured",
         DeadLetterError::Backend { .. } => "Backend",
         _ => "future variant",
     }
@@ -83,7 +83,7 @@ fn dead_letter_error(error: &DeadLetterError) -> &'static str {
 fn outbox_error(error: &OutboxError) -> &'static str {
     match error {
         OutboxError::Invalid { .. } => "Invalid",
-        OutboxError::NotConfigured { .. } => "NotConfigured",
+        OutboxError::NotConfigured => "NotConfigured",
         OutboxError::Backend { .. } => "Backend",
         _ => "future variant",
     }
@@ -114,7 +114,7 @@ fn snapshot_error(error: &SnapshotError) -> &'static str {
 
 fn snapshot_policy_error(error: &SnapshotPolicyError) -> &'static str {
     match error {
-        SnapshotPolicyError::ZeroInterval { .. } => "ZeroInterval",
+        SnapshotPolicyError::ZeroInterval => "ZeroInterval",
         _ => "future variant",
     }
 }
@@ -143,11 +143,12 @@ fn subscription_error(error: &SubscriptionError) -> &'static str {
     }
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn lock_value_error(error: &LockValueError) -> &'static str {
     match error {
-        LockValueError::EmptyName { .. } => "EmptyName",
-        LockValueError::EmptyOwner { .. } => "EmptyOwner",
-        LockValueError::ZeroTtl { .. } => "ZeroTtl",
+        LockValueError::EmptyName => "EmptyName",
+        LockValueError::EmptyOwner => "EmptyOwner",
+        LockValueError::ZeroTtl => "ZeroTtl",
         _ => "future variant",
     }
 }

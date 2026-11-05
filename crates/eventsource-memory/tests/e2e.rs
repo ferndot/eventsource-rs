@@ -481,7 +481,7 @@ async fn shutdown_stops_an_idle_runner() {
     let checkpoints = Arc::new(InMemoryCheckpointStore::new());
     let (bus, _) = recording_bus();
     let mut config = SubscriptionConfig::new("orders");
-    config.poll_interval = Duration::from_secs(3600);
+    config.poll_interval = Duration::from_hours(1);
     let runner = runner_for(&store, &checkpoints, &bus, config);
 
     let shutdown = tokio::time::sleep(Duration::from_millis(20));
@@ -498,7 +498,7 @@ async fn wake_signal_delivers_before_the_poll_interval() {
     let checkpoints = Arc::new(InMemoryCheckpointStore::new());
     let (bus, seen) = recording_bus();
     let mut config = SubscriptionConfig::new("orders");
-    config.poll_interval = Duration::from_secs(3600);
+    config.poll_interval = Duration::from_hours(1);
     let runner = runner_for(&store, &checkpoints, &bus, config).with_wake(store.wake());
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(runner.run(async {

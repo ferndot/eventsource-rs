@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn malformed_body_is_a_decode_error_not_a_panic() {
         for body in [&b"{not json"[..], b"", &[0xff, 0xfe, 0x00]] {
-            let error = decode(body, Position::new("q", 1)).err().expect("must fail");
+            let error = decode(body, Position::new("q", 1)).expect_err("must fail");
             assert!(error.is_syntax() || error.is_eof(), "{error}");
         }
     }
@@ -80,7 +80,7 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_slice(&encode(&envelope())).unwrap();
         value.as_object_mut().unwrap().remove("record");
         let body = serde_json::to_vec(&value).unwrap();
-        let error = decode(&body, Position::new("q", 1)).err().expect("must fail");
+        let error = decode(&body, Position::new("q", 1)).expect_err("must fail");
         assert!(error.is_data(), "{error}");
         assert!(error.to_string().contains("record"), "{error}");
     }

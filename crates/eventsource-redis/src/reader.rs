@@ -170,13 +170,13 @@ mod tests {
 
     #[test]
     fn entry_without_envelope_is_missing_envelope() {
-        let error = reader().decode(&entry("12-3", None)).err().expect("must fail");
+        let error = reader().decode(&entry("12-3", None)).expect_err("must fail");
         assert!(matches!(error, DecodeEntryError::MissingEnvelope { ref id } if id == "12-3"));
     }
 
     #[test]
     fn garbage_envelope_is_invalid_envelope() {
-        let error = reader().decode(&entry("12-3", Some("garbage"))).err().expect("must fail");
+        let error = reader().decode(&entry("12-3", Some("garbage"))).expect_err("must fail");
         assert!(matches!(error, DecodeEntryError::InvalidEnvelope { .. }));
     }
 
@@ -184,7 +184,7 @@ mod tests {
     fn valid_envelope_with_unusable_entry_id_is_invalid_entry_id() {
         let fields = wire::encode(&sample());
         let text = &fields.iter().find(|(n, _)| *n == ENVELOPE_FIELD).unwrap().1;
-        let error = reader().decode(&entry("nonsense", Some(text))).err().expect("must fail");
+        let error = reader().decode(&entry("nonsense", Some(text))).expect_err("must fail");
         assert!(matches!(error, DecodeEntryError::InvalidEntryId { ref id } if id == "nonsense"));
     }
 }
