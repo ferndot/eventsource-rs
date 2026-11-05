@@ -321,3 +321,28 @@ impl LiveFeed for InMemoryEventStore {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// The in-memory feed only fails a read for a position from another store,
+    /// so the cursor of a tail is set to one to force the failure.
+    #[tokio::test]
+    async fn a_live_tail_ends_when_a_feed_read_fails() {
+        let store = Arc::new(InMemoryEventStore::new());
+        let mut tail = LiveTail {
+            wake: store.wake(),
+            after: Some(Position::new("another-store", 1)),
+            buffered: VecDeque::new(),
+            store,
+        };
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), tail.next())
+            .await
+            .expect("a failed read ends the stream instead of waiting for a wake-up");
+        assert!(outcome.is_none());
+    }
+}
