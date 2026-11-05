@@ -35,12 +35,9 @@ impl EventPublisher for RedisPublisher {
         for envelope in envelopes {
             let fields = wire::encode(envelope);
             match self.config.max_len {
-                Some(max) => pipe.xadd_maxlen(
-                    &self.config.stream,
-                    StreamMaxlen::Equals(max),
-                    "*",
-                    &fields,
-                ),
+                Some(max) => {
+                    pipe.xadd_maxlen(&self.config.stream, StreamMaxlen::Equals(max), "*", &fields)
+                }
                 None => pipe.xadd(&self.config.stream, "*", &fields),
             }
             .ignore();

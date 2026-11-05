@@ -77,7 +77,10 @@ pub(crate) fn decode(id: &str, envelope: Option<&str>) -> Result<WireEnvelope, D
 }
 
 impl WireEnvelope {
-    pub(crate) fn into_envelope(self, position: eventsource_core::position::Position) -> EventEnvelope {
+    pub(crate) fn into_envelope(
+        self,
+        position: eventsource_core::position::Position,
+    ) -> EventEnvelope {
         EventEnvelope {
             record: self.record,
             stream: self.stream,

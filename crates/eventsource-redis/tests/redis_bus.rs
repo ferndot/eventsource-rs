@@ -15,10 +15,10 @@ use std::sync::{Arc, Mutex};
 use eventsource_core::bus::handler;
 use eventsource_core::checkpoint::CheckpointStore;
 use eventsource_core::envelope::FeedReadOptions;
-use eventsource_core::subscription::{SubscriptionConfig, SubscriptionRunner};
-use eventsource_memory::{InMemoryCheckpointStore, InMemoryEventBus};
 use eventsource_core::error::StoreError;
 use eventsource_core::store::GlobalFeed;
+use eventsource_core::subscription::{SubscriptionConfig, SubscriptionRunner};
+use eventsource_memory::{InMemoryCheckpointStore, InMemoryEventBus};
 use eventsource_redis::{RedisBusConfig, RedisPublisher, RedisStreamReader};
 use redis::AsyncCommands;
 use redis::streams::StreamRangeReply;
@@ -52,8 +52,7 @@ async fn raw_entries(stream: &str) -> StreamRangeReply {
 #[tokio::test]
 async fn publish_appends_envelope_to_configured_stream() {
     let stream = unique_stream();
-    let publisher =
-        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let publisher = RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
     let env = envelope("OrderPlaced", 1);
 
     publisher.publish(std::slice::from_ref(&env)).await.unwrap();
@@ -71,8 +70,7 @@ async fn publish_appends_envelope_to_configured_stream() {
 #[tokio::test]
 async fn publish_preserves_order_across_batches() {
     let stream = unique_stream();
-    let publisher =
-        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let publisher = RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
     let first: Vec<_> = (1..=5).map(|n| envelope("Step", n)).collect();
     let second: Vec<_> = (6..=8).map(|n| envelope("Step", n)).collect();
 
@@ -96,8 +94,7 @@ async fn publish_preserves_order_across_batches() {
 #[tokio::test]
 async fn reader_decodes_entries_back_into_envelopes() {
     let stream = unique_stream();
-    let publisher =
-        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let publisher = RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
     let reader = RedisStreamReader::new(&redis_url(), stream.clone()).unwrap();
     let sent: Vec<_> = (1..=3).map(|n| envelope("Step", n)).collect();
     publisher.publish(&sent).await.unwrap();
@@ -152,7 +149,10 @@ async fn publish_to_unreachable_redis_returns_bus_error() {
 
     let result = publisher.publish(&[envelope("OrderPlaced", 1)]).await;
 
-    assert!(matches!(result, Err(eventsource_core::error::BusError::Backend(_))));
+    assert!(matches!(
+        result,
+        Err(eventsource_core::error::BusError::Backend(_))
+    ));
 }
 
 #[tokio::test]
@@ -184,8 +184,7 @@ async fn max_len_keeps_only_the_newest_entries() {
 #[tokio::test]
 async fn subscription_runner_delivers_from_redis_and_checkpoints() {
     let stream = unique_stream();
-    let publisher =
-        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let publisher = RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
     let sent: Vec<_> = (1..=5).map(|n| envelope("Step", n)).collect();
     publisher.publish(&sent).await.unwrap();
 
