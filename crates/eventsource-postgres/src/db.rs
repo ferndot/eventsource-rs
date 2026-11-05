@@ -46,6 +46,20 @@ CREATE TABLE IF NOT EXISTS snapshots (
     state          TEXT   NOT NULL,
     created_at     TEXT   NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dead_letters (
+    id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    subscription   TEXT   NOT NULL,
+    event_id       TEXT   NOT NULL,
+    stream_id      TEXT   NOT NULL,
+    stream_version BIGINT NOT NULL,
+    position_store TEXT   NOT NULL,
+    position_token BIGINT NOT NULL,
+    stored_at      TEXT   NOT NULL,
+    record         TEXT   NOT NULL,
+    error          TEXT   NOT NULL,
+    attempts       BIGINT NOT NULL,
+    UNIQUE (subscription, event_id)
+);
 ";
 
 /// Opens a connection that works inside `schema`, creating the schema and tables if needed.

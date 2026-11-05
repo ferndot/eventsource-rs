@@ -10,11 +10,13 @@
 
 pub mod checkpoint;
 mod db;
+pub mod dead_letter;
 pub mod error;
 pub mod snapshot;
 pub mod store;
 
 pub use checkpoint::PostgresCheckpointStore;
+pub use dead_letter::PostgresDeadLetterStore;
 pub use error::PostgresError;
 pub use snapshot::PostgresSnapshotStore;
 pub use store::PostgresEventStore;
