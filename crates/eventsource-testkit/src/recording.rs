@@ -94,7 +94,10 @@ mod tests {
     use eventsource_core::{AggregateId, Category, EventPublisher, StreamId};
 
     fn envelopes(types: &[&str]) -> Vec<eventsource_core::EventEnvelope> {
-        let stream = StreamId::new(AggregateId::new(), Category::new("Order").expect("category"));
+        let stream = StreamId::new(
+            AggregateId::new(),
+            Category::new("Order").expect("category"),
+        );
         types
             .iter()
             .zip(1..)

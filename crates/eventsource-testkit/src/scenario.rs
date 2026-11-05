@@ -54,7 +54,7 @@ impl<D: Decider> DeciderScenario<D> {
 /// What a command produced. Assert on it with the `then_*` methods.
 ///
 /// Every `then_*` method panics with a message naming the expectation and
-/// what actually happened, and returns `self` so assertions can be chained.
+/// what actually happened.
 pub struct ScenarioResult<D: Decider> {
     outcome: Result<Vec<D::Event>, D::Error>,
 }
@@ -64,7 +64,7 @@ impl<D: Decider> ScenarioResult<D> {
     ///
     /// # Panics
     /// If the events differ, or the command was rejected.
-    pub fn then_events(self, expected: impl IntoIterator<Item = D::Event>) -> Self
+    pub fn then_events(&self, expected: impl IntoIterator<Item = D::Event>)
     where
         D::Event: PartialEq,
     {
@@ -78,14 +78,14 @@ impl<D: Decider> ScenarioResult<D> {
                 panic!("expected events {expected:?}, but the command was rejected: {error}")
             }
         }
-        self
     }
 
     /// Asserts the command was rejected with `expected`.
     ///
     /// # Panics
     /// If the error differs, or the command was accepted.
-    pub fn then_error(self, expected: D::Error) -> Self
+    #[allow(clippy::needless_pass_by_value)] // By value reads best at the call site: `.then_error(MyError::X)`.
+    pub fn then_error(&self, expected: D::Error)
     where
         D::Error: PartialEq + Debug,
     {
@@ -98,7 +98,6 @@ impl<D: Decider> ScenarioResult<D> {
                 panic!("expected error {expected:?}, but the command produced {events:?}")
             }
         }
-        self
     }
 }
 
@@ -149,7 +148,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "expected events [Added(2)], but the command was rejected: amount must be positive")]
+    #[should_panic(
+        expected = "expected events [Added(2)], but the command was rejected: amount must be positive"
+    )]
     fn then_events_when_command_rejected_panics() {
         DeciderScenario::<Counter>::new()
             .when(CounterCommand::Add(0))

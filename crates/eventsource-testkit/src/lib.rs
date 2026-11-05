@@ -14,3 +14,5 @@ mod scenario;
 #[cfg(test)]
 mod fixtures;
 pub use scenario::{DeciderScenario, ScenarioResult};
+mod harness;
+pub use harness::{HarnessBus, InMemoryTestHarness};
