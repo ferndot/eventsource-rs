@@ -118,15 +118,15 @@ async fn an_idle_live_stream_stays_pending_after_catching_up() {
     // from inside its own poll (a self-wake), which shows up in the count whatever
     // the scheduler does. We then yield to the runtime many times, giving anything
     // that would wake later plenty of chances to do so, and require zero wake-ups.
-    let wakes = Arc::new(WakeCount::default());
-    let waker = futures::task::waker(Arc::clone(&wakes));
-    let mut cx = Context::from_waker(&waker);
+    let counter = Arc::new(WakeCount::default());
+    let notifier = futures::task::waker(Arc::clone(&counter));
+    let mut cx = Context::from_waker(&notifier);
     assert!(live.poll_next_unpin(&mut cx).is_pending());
     for _ in 0..YIELDS {
         tokio::task::yield_now().await;
     }
     assert_eq!(
-        wakes.count(),
+        counter.count(),
         0,
         "an idle live stream asked to be polled again"
     );
@@ -136,7 +136,7 @@ async fn an_idle_live_stream_stays_pending_after_catching_up() {
     for _ in 0..YIELDS {
         tokio::task::yield_now().await;
     }
-    assert!(wakes.count() >= 1, "an append must wake the idle stream");
+    assert!(counter.count() >= 1, "an append must wake the idle stream");
     let Poll::Ready(Some(event)) = live.poll_next_unpin(&mut cx) else {
         panic!("the appended event should be ready after the wake-up");
     };

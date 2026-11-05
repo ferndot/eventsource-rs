@@ -2,16 +2,10 @@
 
 use chrono::Utc;
 use eventsource_core::snapshot::{Snapshot, SnapshotStore};
-use eventsource_core::{AggregateId, Category, StreamId, Version};
+use eventsource_core::{StreamId, Version};
 use eventsource_memory::InMemorySnapshotStore;
+use eventsource_testing::fixtures::stream;
 use serde_json::json;
-
-fn stream() -> StreamId {
-    StreamId::new(
-        AggregateId::new(),
-        Category::new("Order").expect("category"),
-    )
-}
 
 fn snapshot(stream: &StreamId, version: u64, total: u64) -> Snapshot {
     Snapshot {

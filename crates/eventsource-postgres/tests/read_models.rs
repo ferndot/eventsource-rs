@@ -94,7 +94,9 @@ async fn a_failing_change_rolls_back_the_whole_batch() {
         panic!("expected a postgres failure, got {source:?}");
     };
     assert_eq!(
-        cause.as_db_error().map(tokio_postgres::error::DbError::message),
+        cause
+            .as_db_error()
+            .map(tokio_postgres::error::DbError::message),
         Some("rejected"),
         "the trigger's message must reach the caller: {cause:?}"
     );

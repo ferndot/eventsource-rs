@@ -615,7 +615,9 @@ dependencies = [
  "chrono",
  "eventsource-core",
  "futures",
+ "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

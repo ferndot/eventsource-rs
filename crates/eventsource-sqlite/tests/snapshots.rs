@@ -6,19 +6,12 @@ use chrono::Utc;
 use eventsource_core::error::SnapshotError;
 use eventsource_core::snapshot::{Snapshot, SnapshotPolicy, SnapshotStore};
 use eventsource_core::{
-    AggregateId, AggregateRepository, Category, CommandContext, Decider, DomainEvent, StreamId,
-    Version,
+    AggregateId, AggregateRepository, CommandContext, Decider, DomainEvent, StreamId, Version,
 };
 use eventsource_sqlite::{SqliteEventStore, SqliteSnapshotStore};
+use eventsource_testing::fixtures::stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-
-fn stream() -> StreamId {
-    StreamId::new(
-        AggregateId::new(),
-        Category::new("Counter").expect("category"),
-    )
-}
 
 fn snapshot(stream: &StreamId, version: u64, sum: u64) -> Snapshot {
     Snapshot {

@@ -6,6 +6,7 @@
 //! checks cannot affect one another.
 
 mod clock;
+pub mod fixtures;
 mod recording;
 
 pub use clock::ManualClock;
