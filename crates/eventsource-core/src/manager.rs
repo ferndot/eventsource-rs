@@ -64,6 +64,7 @@ pub enum ManagerError {
 enum Control {
     Run,
     Pause,
+    Stop,
     Shutdown,
 }
 
@@ -283,6 +284,46 @@ impl SubscriptionManager {
     /// [`ManagerError::UnknownSubscription`], or [`ManagerError::InvalidState`]
     /// if the subscription is not running (or failed while pausing).
     pub async fn pause(&self, name: &str) -> Result<(), ManagerError> {
+        let running = |s: &SubscriptionStatus| *s == SubscriptionStatus::Running;
+        self.settle(name, running, Control::Pause, SubscriptionStatus::Paused)
+            .await
+    }
+
+    /// Stops `name` after its current page, whether it is running, paused or failed.
+    ///
+    /// Returns once it has stopped. [`Self::start`] begins again from the saved checkpoint.
+    ///
+    /// # Errors
+    /// [`ManagerError::UnknownSubscription`], or [`ManagerError::InvalidState`]
+    /// if it is already stopped.
+    pub async fn stop(&self, name: &str) -> Result<(), ManagerError> {
+        let live = |s: &SubscriptionStatus| *s != SubscriptionStatus::Stopped;
+        self.settle(name, live, Control::Stop, SubscriptionStatus::Stopped)
+            .await
+    }
+
+    /// Starts a stopped or failed subscription from its saved checkpoint.
+    ///
+    /// # Errors
+    /// [`ManagerError::UnknownSubscription`], or [`ManagerError::InvalidState`]
+    /// if the subscription is running or paused.
+    pub fn start(&self, name: &str) -> Result<(), ManagerError> {
+        self.restart(name, |s| {
+            matches!(
+                s,
+                SubscriptionStatus::Stopped | SubscriptionStatus::Failed(_)
+            )
+        })
+    }
+
+    /// Asks `name` to change to `control` and waits for it to reach `target`.
+    async fn settle(
+        &self,
+        name: &str,
+        allowed: impl Fn(&SubscriptionStatus) -> bool,
+        control: Control,
+        target: SubscriptionStatus,
+    ) -> Result<(), ManagerError> {
         let (mut status, gone) = {
             let entries = self
                 .inner
@@ -290,18 +331,21 @@ impl SubscriptionManager {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             let entry = lookup(&entries, name)?;
-            require(name, entry, |s| *s == SubscriptionStatus::Running)?;
-            entry.control.send_replace(Control::Pause);
+            require(name, entry, allowed)?;
+            entry.control.send_replace(control);
             (entry.status.subscribe(), entry.control.clone())
         };
-        let settled = status.wait_for(|s| *s != SubscriptionStatus::Running);
+        // Stopping always ends in Stopped; the other changes also end early if the runner fails.
+        let stopping = target == SubscriptionStatus::Stopped;
+        let settled =
+            status.wait_for(|s| *s == target || (!stopping && *s != SubscriptionStatus::Running));
         let closed = Box::pin(gone.closed());
         match future::select(Box::pin(settled), closed).await {
             Either::Left((Ok(_), _)) => {}
             _ => return Err(ManagerError::DriverGone),
         }
         let status = status.borrow().clone();
-        if status == SubscriptionStatus::Paused {
+        if status == target {
             Ok(())
         } else {
             Err(ManagerError::InvalidState {
@@ -317,13 +361,21 @@ impl SubscriptionManager {
     /// [`ManagerError::UnknownSubscription`], or [`ManagerError::InvalidState`]
     /// if the subscription is not paused.
     pub fn resume(&self, name: &str) -> Result<(), ManagerError> {
+        self.restart(name, |s| *s == SubscriptionStatus::Paused)
+    }
+
+    fn restart(
+        &self,
+        name: &str,
+        allowed: impl Fn(&SubscriptionStatus) -> bool,
+    ) -> Result<(), ManagerError> {
         let entries = self
             .inner
             .entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let entry = lookup(&entries, name)?;
-        require(name, entry, |s| *s == SubscriptionStatus::Paused)?;
+        require(name, entry, allowed)?;
         entry.status.send_replace(SubscriptionStatus::Running);
         entry.control.send_replace(Control::Run);
         Ok(())
@@ -447,6 +499,12 @@ async fn drive(
             Control::Shutdown => {
                 status.send_replace(SubscriptionStatus::Stopped);
                 return;
+            }
+            Control::Stop => {
+                status.send_replace(SubscriptionStatus::Stopped);
+                if control.changed().await.is_err() {
+                    return;
+                }
             }
             Control::Pause => {
                 status.send_replace(SubscriptionStatus::Paused);
@@ -819,6 +877,78 @@ mod tests {
         assert_eq!(
             manager.health("nope"),
             Err(ManagerError::UnknownSubscription("nope".to_owned()))
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn stop_and_start_control_one_subscription_and_failed_ones_can_restart() {
+        let (manager, driver) = SubscriptionManager::new();
+        let driver = tokio::spawn(driver.run());
+        let feed = Feed::default();
+        feed.append(2);
+        let (checkpoints, sink, other) = (Checkpoints::default(), Sink::default(), Sink::default());
+        register(&manager, "alpha", &feed, &checkpoints, &sink);
+        register(&manager, "beta", &feed, &checkpoints, &other);
+        eventually(|| (sink.tokens() == [1, 2]).then_some(())).await;
+
+        manager.stop("alpha").await.unwrap();
+        assert_eq!(manager.status("alpha"), Ok(SubscriptionStatus::Stopped));
+        feed.append(1);
+        eventually(|| (other.tokens() == [1, 2, 3]).then_some(())).await;
+        assert_eq!(
+            sink.tokens(),
+            [1, 2],
+            "a stopped subscription delivers nothing"
+        );
+        assert!(matches!(
+            manager.start("beta"),
+            Err(ManagerError::InvalidState { .. })
+        ));
+
+        manager.start("alpha").unwrap();
+        assert_eq!(manager.status("alpha"), Ok(SubscriptionStatus::Running));
+        eventually(|| (sink.tokens() == [1, 2, 3]).then_some(())).await;
+        driver.abort();
+
+        // A failed subscription can be stopped, and starting it retries the page.
+        let (manager, driver) = SubscriptionManager::new();
+        let driver = tokio::spawn(driver.run());
+        let flaky = Arc::new(Mutex::new(Some("transient")));
+        let delivered = Sink::default();
+        let (feed2, cps2, delivered2, flaky2) = (
+            feed.clone(),
+            checkpoints.clone(),
+            delivered.clone(),
+            Arc::clone(&flaky),
+        );
+        manager
+            .register("gamma", move || {
+                let sink = Sink {
+                    fail_with: *flaky2.lock().unwrap(),
+                    ..delivered2.clone()
+                };
+                SubscriptionRunner::new(feed2.clone(), cps2.clone(), sink, config("gamma"))
+            })
+            .unwrap();
+        eventually(|| {
+            matches!(manager.status("gamma"), Ok(SubscriptionStatus::Failed(_))).then_some(())
+        })
+        .await;
+        manager.stop("gamma").await.unwrap();
+        assert_eq!(manager.status("gamma"), Ok(SubscriptionStatus::Stopped));
+        *flaky.lock().unwrap() = None;
+        manager.start("gamma").unwrap();
+        eventually(|| (delivered.tokens() == [1, 2, 3]).then_some(())).await;
+        assert_eq!(manager.status("gamma"), Ok(SubscriptionStatus::Running));
+        assert_eq!(
+            manager
+                .health("gamma")
+                .unwrap()
+                .last_error
+                .as_deref()
+                .map(|e| e.contains("transient")),
+            Some(true)
         );
         driver.abort();
     }
