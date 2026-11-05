@@ -119,3 +119,93 @@ impl<D: Decider> AggregateRoot<D> {
         self.uncommitted.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+
+    use super::*;
+    use crate::decider::test_support::{Counter, CounterCommand, CounterEvent};
+    use crate::ids::CorrelationId;
+
+    fn stamp() -> EventMeta {
+        EventMeta::new(Utc::now(), CorrelationId::new())
+    }
+
+    #[test]
+    fn new_aggregate_is_empty() {
+        let agg = AggregateRoot::<Counter>::new(AggregateId::new());
+        assert_eq!(agg.version(), Version::ZERO);
+        assert_eq!(agg.committed_version(), Version::ZERO);
+        assert_eq!(*agg.state(), 0);
+        assert!(agg.uncommitted_events().is_empty());
+    }
+
+    #[test]
+    fn execute_records_uncommitted_events_and_advances_version() {
+        let mut agg = AggregateRoot::<Counter>::new(AggregateId::new());
+        let produced = agg
+            .execute(CounterCommand::Add(vec![2, 3]), &mut stamp)
+            .expect("accepted")
+            .len();
+        assert_eq!(produced, 2);
+        assert_eq!(*agg.state(), 5);
+        assert_eq!(agg.version(), Version::new(2));
+        assert_eq!(agg.committed_version(), Version::ZERO);
+        let pending = agg.uncommitted_events();
+        assert_eq!(pending[0].event, CounterEvent::Added(2));
+        assert_eq!(pending[1].event, CounterEvent::Added(3));
+        assert_ne!(pending[0].meta.event_id, pending[1].meta.event_id);
+    }
+
+    #[test]
+    fn successive_commands_accumulate_versions() {
+        let mut agg = AggregateRoot::<Counter>::new(AggregateId::new());
+        agg.execute(CounterCommand::Add(vec![1]), &mut stamp)
+            .expect("ok");
+        agg.execute(CounterCommand::Add(vec![1, 1]), &mut stamp)
+            .expect("ok");
+        assert_eq!(agg.version(), Version::new(3));
+        assert_eq!(agg.uncommitted_events().len(), 3);
+    }
+
+    #[test]
+    fn rejected_command_leaves_aggregate_unchanged_and_never_stamps() {
+        let mut agg = AggregateRoot::<Counter>::new(AggregateId::new());
+        agg.execute(CounterCommand::Add(vec![4]), &mut stamp)
+            .expect("ok");
+        let mut stamped = 0;
+        let result = agg.execute(CounterCommand::Fail, &mut || {
+            stamped += 1;
+            stamp()
+        });
+        assert!(result.is_err());
+        assert_eq!(stamped, 0);
+        assert_eq!(*agg.state(), 4);
+        assert_eq!(agg.version(), Version::new(1));
+    }
+
+    #[test]
+    fn mark_committed_moves_events_into_committed_version() {
+        let mut agg = AggregateRoot::<Counter>::new(AggregateId::new());
+        agg.execute(CounterCommand::Add(vec![1, 1]), &mut stamp)
+            .expect("ok");
+        agg.mark_committed();
+        assert_eq!(agg.committed_version(), Version::new(2));
+        assert_eq!(agg.version(), Version::new(2));
+        assert!(agg.uncommitted_events().is_empty());
+        agg.execute(CounterCommand::Add(vec![1]), &mut stamp)
+            .expect("ok");
+        assert_eq!(agg.version(), Version::new(3));
+        assert_eq!(agg.committed_version(), Version::new(2));
+    }
+
+    #[test]
+    fn load_from_history_marks_events_committed() {
+        let mut agg = AggregateRoot::<Counter>::new(AggregateId::new());
+        agg.load_from_history([CounterEvent::Added(5), CounterEvent::Added(6)]);
+        assert_eq!(*agg.state(), 11);
+        assert_eq!(agg.committed_version(), Version::new(2));
+        assert!(agg.uncommitted_events().is_empty());
+    }
+}

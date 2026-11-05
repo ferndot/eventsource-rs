@@ -142,3 +142,47 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn category_rejects_whitespace_and_non_ascii() {
+        assert!(Category::new("Or der").is_err());
+        assert!(Category::new("Ordér").is_err());
+        assert!(Category::new("a/b").is_err());
+    }
+
+    #[test]
+    fn category_error_carries_the_input() {
+        match Category::new("bad:name") {
+            Err(StreamIdError::InvalidCategory(name)) => assert_eq!(name, "bad:name"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn category_deserialization_validates() {
+        assert!(serde_json::from_str::<Category>("\"Order\"").is_ok());
+        assert!(serde_json::from_str::<Category>("\"\"").is_err());
+    }
+
+    #[test]
+    fn stream_id_rejects_bad_category_after_separator() {
+        let text = format!("{}:bad cat", AggregateId::new());
+        assert!(matches!(
+            text.parse::<StreamId>(),
+            Err(StreamIdError::InvalidCategory(_))
+        ));
+    }
+
+    #[test]
+    fn stream_id_renders_id_then_category() {
+        let agg = AggregateId::new();
+        let id = StreamId::new(agg, Category::new("Order").expect("valid"));
+        assert_eq!(id.to_string(), format!("{agg}:Order"));
+        assert_eq!(id.aggregate_id(), agg);
+        assert_eq!(id.category().as_str(), "Order");
+    }
+}
