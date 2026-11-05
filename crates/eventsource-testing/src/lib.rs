@@ -5,6 +5,10 @@
 //! returns a fresh, empty store. Each check runs against its own store, so
 //! checks cannot affect one another.
 
+mod recording;
+
+pub use recording::{RecordedSpan, RecordedValue, RecordingSpan, RecordingTracer};
+
 use eventsource_core::envelope::{FeedReadOptions, ReadDirection, StreamReadOptions};
 use eventsource_core::error::StoreError;
 use eventsource_core::event::{EventMeta, EventRecord};

@@ -22,6 +22,7 @@ use crate::error::{BusError, SubscriptionError};
 use crate::ids::TenantId;
 use crate::store::GlobalFeed;
 use crate::stream_id::Category;
+use crate::telemetry::{NoopTracer, Span, Tracer, attr, span};
 
 /// Where a subscription starts when it has no saved checkpoint.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -119,7 +120,7 @@ enum Wait {
 /// `F` is the feed, `C` the checkpoint store, and `P` the sink, usually an
 /// [`crate::bus::EventPublisher`] such as the in-memory bus. `D` is the
 /// dead-letter store; see [`Self::with_dead_letters`].
-pub struct SubscriptionRunner<F, C, P, D = NoDeadLetters> {
+pub struct SubscriptionRunner<F, C, P, D = NoDeadLetters, T = NoopTracer> {
     feed: F,
     checkpoints: C,
     sink: P,
@@ -128,6 +129,7 @@ pub struct SubscriptionRunner<F, C, P, D = NoDeadLetters> {
     wake: Option<watch::Receiver<u64>>,
     cursor: Option<Checkpoint>,
     stats: RunStats,
+    tracer: T,
 }
 
 impl<F, C, P> SubscriptionRunner<F, C, P> {
@@ -142,9 +144,12 @@ impl<F, C, P> SubscriptionRunner<F, C, P> {
             wake: None,
             cursor: None,
             stats: RunStats::default(),
+            tracer: NoopTracer,
         }
     }
+}
 
+impl<F, C, P, T> SubscriptionRunner<F, C, P, NoDeadLetters, T> {
     /// Parks an event that fails every attempt in `store` and moves on, instead of stopping.
     ///
     /// With a store configured the runner hands events to the sink one at a
@@ -155,7 +160,7 @@ impl<F, C, P> SubscriptionRunner<F, C, P> {
     /// Delivery stays at-least-once: a restart mid-page redelivers the page's
     /// events that already succeeded.
     #[must_use]
-    pub fn with_dead_letters<D2>(self, store: D2) -> SubscriptionRunner<F, C, P, D2> {
+    pub fn with_dead_letters<D2>(self, store: D2) -> SubscriptionRunner<F, C, P, D2, T> {
         SubscriptionRunner {
             feed: self.feed,
             checkpoints: self.checkpoints,
@@ -165,16 +170,38 @@ impl<F, C, P> SubscriptionRunner<F, C, P> {
             wake: self.wake,
             cursor: self.cursor,
             stats: self.stats,
+            tracer: self.tracer,
         }
     }
 }
 
-impl<F, C, P, D> SubscriptionRunner<F, C, P, D>
+impl<F, C, P, D, T> SubscriptionRunner<F, C, P, D, T> {
+    /// Reports one span per delivered page to `tracer`.
+    ///
+    /// Without this call the runner uses [`NoopTracer`], which compiles away.
+    #[must_use]
+    pub fn with_tracer<T2: Tracer>(self, tracer: T2) -> SubscriptionRunner<F, C, P, D, T2> {
+        SubscriptionRunner {
+            feed: self.feed,
+            checkpoints: self.checkpoints,
+            sink: self.sink,
+            dead_letters: self.dead_letters,
+            config: self.config,
+            wake: self.wake,
+            cursor: self.cursor,
+            stats: self.stats,
+            tracer,
+        }
+    }
+}
+
+impl<F, C, P, D, T> SubscriptionRunner<F, C, P, D, T>
 where
     F: GlobalFeed,
     C: CheckpointStore,
     P: EventPublisher,
     D: DeadLetterStore,
+    T: Tracer,
 {
     /// Wakes the runner when the store signals new events, so it does not wait out the poll interval.
     ///
@@ -272,10 +299,19 @@ where
             events_processed: cursor.events_processed.saturating_add(delivered),
         };
 
-        self.deliver_page(&batch).await?;
-        self.checkpoints
-            .save(&self.config.name, next.clone())
-            .await?;
+        let mut trace = self.start_page_span(batch.len());
+        let mut failures = 0;
+        let outcome = self.deliver_page(&batch, &mut failures).await;
+        trace.set(attr::FAILURE_COUNT, u64::from(failures).into());
+        if let Err(error) = outcome {
+            trace.fail(error_kind(&error));
+            return Err(error);
+        }
+        if let Err(error) = self.checkpoints.save(&self.config.name, next.clone()).await {
+            trace.fail("CheckpointError");
+            return Err(error.into());
+        }
+        drop(trace);
 
         self.cursor = Some(next);
         self.stats.events_delivered = self.stats.events_delivered.saturating_add(delivered);
@@ -283,19 +319,41 @@ where
         Ok(true)
     }
 
+    fn start_page_span(&self, page_size: usize) -> T::Span {
+        if !T::ENABLED {
+            return self.tracer.start(span::SUBSCRIPTION_PAGE, &[]);
+        }
+        self.tracer.start(
+            span::SUBSCRIPTION_PAGE,
+            &[
+                (attr::SUBSCRIPTION_NAME, self.config.name.as_str().into()),
+                (attr::BATCH_SIZE, page_size.into()),
+            ],
+        )
+    }
+
     /// Delivers a page: whole under the retry policy, or event by event with a dead-letter store.
-    async fn deliver_page(&self, batch: &[EventEnvelope]) -> Result<(), SubscriptionError> {
+    ///
+    /// `failures` counts failed sink attempts, including ones a retry later recovered.
+    async fn deliver_page(
+        &self,
+        batch: &[EventEnvelope],
+        failures: &mut u32,
+    ) -> Result<(), SubscriptionError> {
         let Some(store) = &self.dead_letters else {
-            return self.deliver(batch).await.map_err(|(attempts, last)| {
-                SubscriptionError::Handler {
+            return self
+                .deliver(batch, failures)
+                .await
+                .map_err(|(attempts, last)| SubscriptionError::Handler {
                     name: self.config.name.clone(),
                     attempts,
                     last,
-                }
-            });
+                });
         };
         for envelope in batch {
-            let Err((attempts, last)) = self.deliver(std::slice::from_ref(envelope)).await else {
+            let Err((attempts, last)) =
+                self.deliver(std::slice::from_ref(envelope), failures).await
+            else {
                 continue;
             };
             let entry = DeadLetterEntry {
@@ -319,7 +377,11 @@ where
     /// Hands `batch` to the sink, retrying under the retry policy.
     ///
     /// On exhaustion returns the attempts made and the last failure.
-    async fn deliver(&self, batch: &[EventEnvelope]) -> Result<(), (u32, BusError)> {
+    async fn deliver(
+        &self,
+        batch: &[EventEnvelope],
+        failures: &mut u32,
+    ) -> Result<(), (u32, BusError)> {
         let policy = self.config.retry;
         let mut backoff = policy.initial_backoff;
         let mut attempt: u32 = 1;
@@ -328,6 +390,7 @@ where
                 Ok(()) => return Ok(()),
                 Err(error) => error,
             };
+            *failures += 1;
             if attempt >= policy.max_attempts.get() {
                 return Err((attempt, error));
             }
@@ -358,5 +421,14 @@ where
             self.wake = None;
         }
         outcome
+    }
+}
+
+/// A short, payload-free name for a subscription error, safe to put on a span.
+fn error_kind(error: &SubscriptionError) -> &'static str {
+    match error {
+        SubscriptionError::Handler { .. } => "Handler",
+        SubscriptionError::DeadLetter { .. } => "DeadLetter",
+        _ => "SubscriptionError",
     }
 }

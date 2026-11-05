@@ -16,6 +16,7 @@ use eventsource_core::event::EventRecord;
 use eventsource_core::ids::EventId;
 use eventsource_core::live::LiveFeed;
 use eventsource_core::store::{AggregateStore, GlobalFeed};
+use eventsource_core::telemetry::{NoopTracer, Span, Tracer, attr, span, start_stream_span};
 use eventsource_core::version::ExpectedVersion;
 use eventsource_core::{Clock, EventRegistry, Position, StreamId, SystemClock, Version};
 
@@ -31,12 +32,13 @@ struct Inner {
 /// All state sits behind one [`Mutex`]. The lock is never held across an
 /// `.await`, and every method completes without awaiting, so there is no
 /// interleaving to reason about inside an append.
-pub struct InMemoryEventStore {
+pub struct InMemoryEventStore<T = NoopTracer> {
     store_id: String,
     registry: Option<Arc<EventRegistry>>,
     clock: Arc<dyn Clock>,
     inner: Mutex<Inner>,
     wake: watch::Sender<u64>,
+    tracer: T,
 }
 
 impl InMemoryEventStore {
@@ -49,6 +51,24 @@ impl InMemoryEventStore {
             clock: Arc::new(SystemClock),
             inner: Mutex::new(Inner::default()),
             wake: watch::channel(0).0,
+            tracer: NoopTracer,
+        }
+    }
+}
+
+impl<T> InMemoryEventStore<T> {
+    /// Reports spans for appends and stream reads to `tracer`.
+    ///
+    /// Without this call the store uses [`NoopTracer`], which compiles away.
+    #[must_use]
+    pub fn with_tracer<T2: Tracer>(self, tracer: T2) -> InMemoryEventStore<T2> {
+        InMemoryEventStore {
+            store_id: self.store_id,
+            registry: self.registry,
+            clock: self.clock,
+            inner: self.inner,
+            wake: self.wake,
+            tracer,
         }
     }
 
@@ -103,8 +123,57 @@ impl Default for InMemoryEventStore {
     }
 }
 
-impl AggregateStore for InMemoryEventStore {
+impl<T: Tracer + 'static> AggregateStore for InMemoryEventStore<T> {
     async fn append(
+        &self,
+        stream: &StreamId,
+        events: Vec<EventRecord>,
+        expected: ExpectedVersion,
+    ) -> Result<AppendResult, StoreError> {
+        let mut trace = start_stream_span(&self.tracer, span::APPEND, stream, Some(events.len()));
+        let result = self.append_events(stream, events, expected);
+        match &result {
+            Ok(appended) => {
+                trace.set(attr::VERSION, appended.new_version.get().into());
+                if let Some(last) = appended.envelopes.last() {
+                    trace.set(attr::POSITION, last.position.token().into());
+                }
+            }
+            Err(error) => trace.fail(error_kind(error)),
+        }
+        result
+    }
+
+    async fn read_stream(
+        &self,
+        stream: &StreamId,
+        options: StreamReadOptions,
+    ) -> Result<Vec<EventEnvelope>, StoreError> {
+        let mut trace = start_stream_span(&self.tracer, span::LOAD, stream, None);
+        let result = Ok(self.read_stream_events(stream, &options));
+        match &result {
+            Ok(events) => {
+                trace.set(attr::EVENT_COUNT, events.len().into());
+                if T::ENABLED {
+                    let version = self.lock().streams.get(stream).map_or(0, Vec::len);
+                    trace.set(attr::VERSION, version.into());
+                }
+            }
+            Err(error) => trace.fail(error_kind(error)),
+        }
+        result
+    }
+
+    async fn stream_version(&self, stream: &StreamId) -> Result<Version, StoreError> {
+        let inner = self.lock();
+        Ok(Version::new(
+            inner.streams.get(stream).map_or(0, Vec::len) as u64
+        ))
+    }
+}
+
+impl<T: Tracer> InMemoryEventStore<T> {
+    fn append_events(
         &self,
         stream: &StreamId,
         events: Vec<EventRecord>,
@@ -176,11 +245,11 @@ impl AggregateStore for InMemoryEventStore {
         })
     }
 
-    async fn read_stream(
+    fn read_stream_events(
         &self,
         stream: &StreamId,
-        options: StreamReadOptions,
-    ) -> Result<Vec<EventEnvelope>, StoreError> {
+        options: &StreamReadOptions,
+    ) -> Vec<EventEnvelope> {
         let inner = self.lock();
         let indices: &[usize] = inner.streams.get(stream).map_or(&[], Vec::as_slice);
         let total = indices.len();
@@ -199,27 +268,30 @@ impl AggregateStore for InMemoryEventStore {
             .map_or(total, |v| usize::try_from(v.get()).unwrap_or(usize::MAX))
             .min(total);
         if start >= end {
-            return Ok(Vec::new());
+            return Vec::new();
         }
 
         let slice = indices[start..end].iter().map(|&i| inner.events[i].clone());
         let limit = options.limit.map_or(usize::MAX, NonZeroUsize::get);
-        let selected = match options.direction {
+        match options.direction {
             ReadDirection::Forward => slice.take(limit).collect(),
             ReadDirection::Backward => slice.rev().take(limit).collect(),
-        };
-        Ok(selected)
-    }
-
-    async fn stream_version(&self, stream: &StreamId) -> Result<Version, StoreError> {
-        let inner = self.lock();
-        Ok(Version::new(
-            inner.streams.get(stream).map_or(0, Vec::len) as u64
-        ))
+        }
     }
 }
 
-impl GlobalFeed for InMemoryEventStore {
+/// A short, payload-free name for a store error, safe to put on a span.
+fn error_kind(error: &StoreError) -> &'static str {
+    match error {
+        StoreError::EmptyAppend => "EmptyAppend",
+        StoreError::UnregisteredEventType(_) => "UnregisteredEventType",
+        StoreError::ConcurrencyConflict { .. } => "ConcurrencyConflict",
+        StoreError::DuplicateEvent(_) => "DuplicateEvent",
+        _ => "StoreError",
+    }
+}
+
+impl<T: Tracer + 'static> GlobalFeed for InMemoryEventStore<T> {
     async fn read_all(
         &self,
         from: Option<&Position>,
@@ -268,14 +340,14 @@ impl GlobalFeed for InMemoryEventStore {
 const LIVE_PAGE: NonZeroUsize = NonZeroUsize::MIN.saturating_add(255);
 
 /// Cursor state of one live stream.
-struct LiveTail {
-    store: Arc<InMemoryEventStore>,
+struct LiveTail<T> {
+    store: Arc<InMemoryEventStore<T>>,
     wake: watch::Receiver<u64>,
     after: Option<Position>,
     buffered: VecDeque<EventEnvelope>,
 }
 
-impl LiveTail {
+impl<T: Tracer + 'static> LiveTail<T> {
     /// The next event after the cursor, waiting for appends. `None` ends the stream.
     async fn next(&mut self) -> Option<EventEnvelope> {
         loop {
@@ -302,7 +374,7 @@ impl LiveTail {
     }
 }
 
-impl LiveFeed for InMemoryEventStore {
+impl<T: Tracer + 'static> LiveFeed for InMemoryEventStore<T> {
     /// Tails the feed from its current head, waking on the store's append signal.
     fn subscribe_live(self: Arc<Self>) -> BoxStream<'static, EventEnvelope> {
         // Subscribe to wake-ups before reading the head, so an append between
