@@ -6,6 +6,6 @@ mod publisher;
 mod wire;
 
 pub use config::{KafkaBusConfig, KafkaConsumerConfig};
-pub use consumer::{ConsumeError, Delivery, KafkaConsumer};
+pub use consumer::{ConsumeError, Delivery, KafkaConsumer, UnsupportedFilter};
 pub use publisher::KafkaPublisher;
 pub use wire::DecodeRecordError;

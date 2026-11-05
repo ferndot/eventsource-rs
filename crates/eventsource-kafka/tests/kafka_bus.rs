@@ -9,10 +9,12 @@ use chrono::Utc;
 use eventsource_core::bus::{EventPublisher, handler};
 use eventsource_core::checkpoint::CheckpointStore;
 use eventsource_core::envelope::EventEnvelope;
-use eventsource_core::error::BusError;
+use eventsource_core::envelope::FeedReadOptions;
+use eventsource_core::error::{BusError, StoreError};
 use eventsource_core::event::{EventMeta, EventRecord};
 use eventsource_core::ids::{AggregateId, CorrelationId};
 use eventsource_core::position::Position;
+use eventsource_core::store::GlobalFeed;
 use eventsource_core::stream_id::{Category, StreamId};
 use eventsource_core::subscription::{SubscriptionConfig, SubscriptionRunner};
 use eventsource_core::version::Version;
@@ -321,4 +323,21 @@ fn committed_offset(topic: &str, group: &str, partition: i32) -> Offset {
         .find_partition(topic, partition)
         .expect("partition listed")
         .offset()
+}
+
+#[tokio::test]
+async fn feed_rejects_filters_it_cannot_apply() {
+    let topic = create_topic(1).await;
+    let feed = consumer(&topic, &unique_group());
+    let options = FeedReadOptions {
+        category: Some(Category::new("Order").unwrap()),
+        ..FeedReadOptions::default()
+    };
+
+    let outcome = feed.read_all(None, options).await;
+
+    assert!(
+        matches!(outcome, Err(StoreError::Backend(_))),
+        "expected a Backend error, got {outcome:?}"
+    );
 }

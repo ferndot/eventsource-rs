@@ -186,6 +186,11 @@ impl KafkaConsumer {
     }
 }
 
+/// A tenant or category filter was given to a feed that cannot apply it.
+#[derive(Debug, thiserror::Error)]
+#[error("the Kafka feed cannot filter by tenant or category")]
+pub struct UnsupportedFilter;
+
 fn backend(error: impl std::error::Error + Send + Sync + 'static) -> StoreError {
     StoreError::Backend(Box::new(error))
 }
@@ -206,6 +211,9 @@ impl GlobalFeed for KafkaConsumer {
         from: Option<&Position>,
         options: FeedReadOptions,
     ) -> Result<Vec<EventEnvelope>, StoreError> {
+        if options.tenant_id.is_some() || options.category.is_some() {
+            return Err(backend(UnsupportedFilter));
+        }
         if let Some(from) = from {
             from.try_cmp(&Position::new(self.store_id.clone(), 0))?;
             let acknowledged = {
