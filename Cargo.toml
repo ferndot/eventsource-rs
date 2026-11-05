@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/eventsource-core",
+    "crates/eventsource-kafka",
     "crates/eventsource-memory",
     "crates/eventsource-rabbitmq",
     "crates/eventsource-redis",
@@ -21,6 +22,7 @@ license = "MIT OR Apache-2.0"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 lapin = { version = "=4.12.3", default-features = false, features = ["tokio"] }
+rdkafka = { version = "0.39.0", default-features = false, features = ["tokio", "cmake-build", "libz", "curl"] }
 redis = { version = "1", default-features = false, features = ["tokio-comp", "streams"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 tempfile = "3"
