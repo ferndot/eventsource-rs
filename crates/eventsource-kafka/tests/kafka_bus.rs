@@ -31,7 +31,11 @@ async fn create_topic(partitions: i32) -> String {
         .expect("admin client");
     let results = admin
         .create_topics(
-            &[NewTopic::new(&topic, partitions, TopicReplication::Fixed(1))],
+            &[NewTopic::new(
+                &topic,
+                partitions,
+                TopicReplication::Fixed(1),
+            )],
             &AdminOptions::new().request_timeout(Some(Duration::from_secs(20))),
         )
         .await
@@ -64,7 +68,7 @@ fn publisher(topic: &str) -> KafkaPublisher {
 }
 
 fn consumer(topic: &str, group: &str) -> KafkaConsumer {
-    KafkaConsumer::new(KafkaConsumerConfig::new(bootstrap(), topic, group)).unwrap()
+    KafkaConsumer::new(&KafkaConsumerConfig::new(bootstrap(), topic, group)).unwrap()
 }
 
 fn batch(n: usize) -> NonZeroUsize {
@@ -92,4 +96,78 @@ async fn publish_one_envelope_is_received_with_same_id_type_and_payload() {
     assert_eq!(received.record.event_type, "OrderPlaced");
     assert_eq!(received.record.payload, json!({ "n": 1 }));
     assert_eq!(received.stream, sent.stream);
+}
+
+/// Polls until `count` deliveries arrived, failing the test if they do not within 30 seconds.
+async fn collect(consumer: &KafkaConsumer, count: usize) -> Vec<eventsource_kafka::Delivery> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut all = Vec::new();
+    while all.len() < count {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out with {} of {count} records",
+            all.len()
+        );
+        all.extend(
+            consumer
+                .poll_batch(batch(100), Duration::from_secs(2))
+                .await
+                .unwrap(),
+        );
+    }
+    all
+}
+
+#[tokio::test]
+async fn same_stream_key_is_read_back_in_publish_order() {
+    let topic = create_topic(3).await;
+    let stream = new_stream();
+    let sent: Vec<_> = (1..=20)
+        .map(|n| envelope_in(&stream, "OrderPlaced", n))
+        .collect();
+    publisher(&topic).publish(&sent).await.unwrap();
+
+    let got = collect(&consumer(&topic, &unique_group()), sent.len()).await;
+
+    let ids: Vec<_> = got
+        .iter()
+        .map(|d| d.envelope.record.meta.event_id)
+        .collect();
+    let expected: Vec<_> = sent.iter().map(|e| e.record.meta.event_id).collect();
+    assert_eq!(ids, expected);
+}
+
+#[tokio::test]
+async fn different_stream_keys_keep_order_within_each_key() {
+    let topic = create_topic(3).await;
+    let streams: Vec<_> = (0..4).map(|_| new_stream()).collect();
+    // Interleave the streams: s0#1, s1#1, s2#1, s3#1, s0#2, ...
+    let sent: Vec<_> = (1..=10)
+        .flat_map(|n| {
+            streams
+                .iter()
+                .map(move |s| envelope_in(s, "OrderPlaced", n))
+        })
+        .collect();
+    publisher(&topic).publish(&sent).await.unwrap();
+
+    let got = collect(&consumer(&topic, &unique_group()), sent.len()).await;
+
+    for stream in &streams {
+        let mine: Vec<_> = got
+            .iter()
+            .filter(|d| &d.envelope.stream == stream)
+            .collect();
+        let versions: Vec<u64> = mine
+            .iter()
+            .map(|d| d.envelope.stream_version.get())
+            .collect();
+        assert_eq!(
+            versions,
+            (1..=10).collect::<Vec<_>>(),
+            "order within {stream}"
+        );
+        // One key maps to one partition, which is what makes the order meaningful.
+        assert!(mine.iter().all(|d| d.partition == mine[0].partition));
+    }
 }

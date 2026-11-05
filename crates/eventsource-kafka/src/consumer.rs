@@ -52,7 +52,7 @@ impl KafkaConsumer {
     ///
     /// # Errors
     /// If librdkafka rejects the configuration or the subscription.
-    pub fn new(config: KafkaConsumerConfig) -> Result<Self, KafkaError> {
+    pub fn new(config: &KafkaConsumerConfig) -> Result<Self, KafkaError> {
         let consumer: StreamConsumer = ClientConfig::new()
             .set("bootstrap.servers", &config.bootstrap_servers)
             .set("group.id", &config.group_id)

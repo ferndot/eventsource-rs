@@ -35,7 +35,9 @@ impl EventPublisher for KafkaPublisher {
         for envelope in envelopes {
             let key = envelope.stream.to_string();
             let value = wire::encode(envelope);
-            let record = FutureRecord::to(&self.config.topic).key(&key).payload(&value);
+            let record = FutureRecord::to(&self.config.topic)
+                .key(&key)
+                .payload(&value);
             self.producer
                 .send(record, Timeout::Never)
                 .await
