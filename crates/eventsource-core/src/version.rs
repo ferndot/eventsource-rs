@@ -66,3 +66,45 @@ impl ExpectedVersion {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_counts_events() {
+        assert_eq!(Version::ZERO.get(), 0);
+        assert_eq!(Version::default(), Version::ZERO);
+        assert_eq!(Version::ZERO.next(), Version::new(1));
+        assert_eq!(Version::new(3).advance(4), Version::new(7));
+        assert_eq!(Version::new(3).advance(0), Version::new(3));
+        assert!(Version::new(2) < Version::new(3));
+    }
+
+    #[test]
+    fn expected_version_any_accepts_everything() {
+        assert!(ExpectedVersion::Any.is_satisfied_by(Version::ZERO));
+        assert!(ExpectedVersion::Any.is_satisfied_by(Version::new(9)));
+    }
+
+    #[test]
+    fn expected_no_stream_requires_empty() {
+        assert!(ExpectedVersion::NoStream.is_satisfied_by(Version::ZERO));
+        assert!(!ExpectedVersion::NoStream.is_satisfied_by(Version::new(1)));
+    }
+
+    #[test]
+    fn expected_stream_exists_requires_events() {
+        assert!(!ExpectedVersion::StreamExists.is_satisfied_by(Version::ZERO));
+        assert!(ExpectedVersion::StreamExists.is_satisfied_by(Version::new(1)));
+    }
+
+    #[test]
+    fn expected_exact_requires_equal_version() {
+        let expected = ExpectedVersion::Exact(Version::new(2));
+        assert!(expected.is_satisfied_by(Version::new(2)));
+        assert!(!expected.is_satisfied_by(Version::new(1)));
+        assert!(!expected.is_satisfied_by(Version::new(3)));
+        assert!(ExpectedVersion::Exact(Version::ZERO).is_satisfied_by(Version::ZERO));
+    }
+}

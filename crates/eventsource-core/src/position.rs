@@ -83,3 +83,39 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use std::cmp::Ordering;
+
+    use super::*;
+
+    #[test]
+    fn ordering_is_by_token_and_transitive() {
+        let a = Position::new("s", 1);
+        let b = Position::new("s", 10);
+        let c = Position::new("s", 100);
+        assert_eq!(a.try_cmp(&b), Ok(Ordering::Less));
+        assert_eq!(b.try_cmp(&c), Ok(Ordering::Less));
+        assert_eq!(a.try_cmp(&c), Ok(Ordering::Less));
+    }
+
+    #[test]
+    fn foreign_error_names_both_stores() {
+        let err = Position::new("a", 1).try_cmp(&Position::new("b", 1));
+        assert_eq!(
+            err,
+            Err(PositionError::Foreign {
+                left: "a".to_owned(),
+                right: "b".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn accessors_return_parts() {
+        let p = Position::new("store-1", 42);
+        assert_eq!(p.store_id(), "store-1");
+        assert_eq!(p.token(), 42);
+    }
+}
