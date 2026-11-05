@@ -328,3 +328,77 @@ async fn snapshots_carry_the_deciders_state_schema_version() {
         .expect("load");
     assert_eq!(aggregate.state(), &CounterState { sum: 2 });
 }
+
+#[tokio::test]
+async fn snapshot_ahead_of_the_stream_is_ignored() {
+    let events: Events = Arc::new(InMemoryEventStore::new());
+    let snapshots: Snapshots = Arc::new(InMemorySnapshotStore::new());
+    let id = AggregateId::new();
+    append_good(&events, id, &[1, 2, 3], 0).await;
+    // The stream has 3 events; a snapshot claiming version 10 cannot be right.
+    snapshots
+        .save(snapshot(id, 10, 1, json!({ "sum": 1000 })))
+        .await
+        .expect("save snapshot");
+
+    let aggregate = snapshot_repo(&events, &snapshots, 100)
+        .load(id)
+        .await
+        .expect("load");
+    assert_eq!(aggregate.state(), &CounterState { sum: 6 });
+    assert_eq!(aggregate.version(), Version::new(3));
+}
+
+#[tokio::test]
+async fn snapshot_at_version_zero_is_ignored() {
+    let events: Events = Arc::new(InMemoryEventStore::new());
+    let snapshots: Snapshots = Arc::new(InMemorySnapshotStore::new());
+    let id = AggregateId::new();
+    append_good(&events, id, &[1, 2], 0).await;
+    // Version zero means "no events folded in", so its state would be applied on top of a full replay.
+    snapshots
+        .save(snapshot(id, 0, 1, json!({ "sum": 1000 })))
+        .await
+        .expect("save snapshot");
+
+    let aggregate = snapshot_repo(&events, &snapshots, 100)
+        .load(id)
+        .await
+        .expect("load");
+    assert_eq!(aggregate.state(), &CounterState { sum: 3 });
+}
+
+/// A snapshot store that is readable but refuses every write.
+struct UnwritableSnapshots;
+
+impl SnapshotStore for UnwritableSnapshots {
+    async fn save(&self, _: Snapshot) -> Result<(), SnapshotError> {
+        Err(SnapshotError::Backend("disk full".into()))
+    }
+
+    async fn load(&self, _: &StreamId) -> Result<Option<Snapshot>, SnapshotError> {
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn failing_to_write_a_snapshot_does_not_fail_the_save() {
+    let events: Events = Arc::new(InMemoryEventStore::new());
+    let id = AggregateId::new();
+    let repo = AggregateRepository::<Counter, Events>::new(Arc::clone(&events))
+        .expect("repository")
+        .with_snapshots(
+            UnwritableSnapshots,
+            SnapshotPolicy::every_n_events(2).expect("policy"),
+        );
+
+    let saved = repo
+        .execute(id, CounterCommand::Add(vec![1, 1]), &CommandContext::new())
+        .await
+        .expect("the events are committed, so the save succeeds");
+    assert!(saved.is_some());
+    assert_eq!(
+        repo.stored_version(id).await.expect("version"),
+        Version::new(2)
+    );
+}
