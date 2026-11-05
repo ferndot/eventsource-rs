@@ -46,6 +46,11 @@ CREATE TABLE IF NOT EXISTS snapshots (
     state          TEXT   NOT NULL,
     created_at     TEXT   NOT NULL
 );
+CREATE TABLE IF NOT EXISTS locks (
+    name       TEXT PRIMARY KEY,
+    owner      TEXT   NOT NULL,
+    expires_at BIGINT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dead_letters (
     id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     subscription   TEXT   NOT NULL,
