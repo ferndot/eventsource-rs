@@ -7,6 +7,7 @@ use std::time::Duration;
 use chrono::Utc;
 use eventsource_core::bus::EventPublisher;
 use eventsource_core::envelope::EventEnvelope;
+use eventsource_core::error::BusError;
 use eventsource_core::event::{EventMeta, EventRecord};
 use eventsource_core::ids::{AggregateId, CorrelationId};
 use eventsource_core::position::Position;
@@ -225,5 +226,32 @@ async fn committed_records_are_not_redelivered_but_later_ones_are() {
         more.is_empty(),
         "committed records came back: {}",
         more.len()
+    );
+}
+
+#[tokio::test]
+async fn publish_to_unreachable_broker_fails_with_backend_error_in_bounded_time() {
+    // Nothing listens on port 1, so the producer can never reach a broker.
+    let mut config = KafkaBusConfig::new("127.0.0.1:1", "never-created");
+    config.message_timeout = Duration::from_secs(2);
+    let publisher = KafkaPublisher::new(config).unwrap();
+    let sent = envelope_in(&new_stream(), "OrderPlaced", 1);
+
+    let started = std::time::Instant::now();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(15),
+        publisher.publish(std::slice::from_ref(&sent)),
+    )
+    .await
+    .expect("publish hung past the bound instead of failing");
+
+    assert!(
+        matches!(outcome, Err(BusError::Backend(_))),
+        "expected BusError::Backend, got {outcome:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "took {:?}",
+        started.elapsed()
     );
 }

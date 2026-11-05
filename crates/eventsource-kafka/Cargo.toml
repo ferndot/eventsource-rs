@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 eventsource-core = { path = "../eventsource-core" }
 chrono.workspace = true
+futures.workspace = true
 rdkafka.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,5 +1,7 @@
 //! Settings for the Kafka publisher and consumer.
 
+use std::time::Duration;
+
 /// Where and how events are published.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KafkaBusConfig {
@@ -7,6 +9,8 @@ pub struct KafkaBusConfig {
     pub bootstrap_servers: String,
     /// Topic every envelope is published to.
     pub topic: String,
+    /// How long a record may stay undelivered, retries included, before publish fails (`message.timeout.ms`).
+    pub message_timeout: Duration,
 }
 
 impl KafkaBusConfig {
@@ -16,6 +20,7 @@ impl KafkaBusConfig {
         Self {
             bootstrap_servers: bootstrap_servers.into(),
             topic: topic.into(),
+            message_timeout: Duration::from_secs(30),
         }
     }
 }
