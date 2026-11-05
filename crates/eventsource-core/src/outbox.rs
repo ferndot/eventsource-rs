@@ -114,6 +114,17 @@ pub trait OutboxStore: Send + Sync {
     /// # Errors
     /// [`OutboxError::Backend`] if the backend fails.
     fn mark_published(&self, id: OutboxId) -> impl Future<Output = Result<(), OutboxError>> + Send;
+
+    /// Records a failed delivery: the attempt count goes up by one and the
+    /// message stays pending. Unknown ids are a no-op.
+    ///
+    /// # Errors
+    /// [`OutboxError::Backend`] if the backend fails.
+    fn mark_failed(
+        &self,
+        id: OutboxId,
+        error: &str,
+    ) -> impl Future<Output = Result<(), OutboxError>> + Send;
 }
 
 impl<T: OutboxStore> OutboxStore for Arc<T> {
@@ -133,6 +144,14 @@ impl<T: OutboxStore> OutboxStore for Arc<T> {
 
     fn mark_published(&self, id: OutboxId) -> impl Future<Output = Result<(), OutboxError>> + Send {
         (**self).mark_published(id)
+    }
+
+    fn mark_failed(
+        &self,
+        id: OutboxId,
+        error: &str,
+    ) -> impl Future<Output = Result<(), OutboxError>> + Send {
+        (**self).mark_failed(id, error)
     }
 }
 
@@ -187,9 +206,11 @@ where
                 report.published += 1;
             }
             Err(error) => {
+                let error = error.to_string();
+                store.mark_failed(message.id, &error).await?;
                 report.failed.push(RelayFailure {
                     id: message.id,
-                    error: error.to_string(),
+                    error,
                 });
                 break;
             }

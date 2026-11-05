@@ -63,4 +63,12 @@ impl OutboxStore for InMemoryOutboxStore {
         }
         Ok(())
     }
+
+    async fn mark_failed(&self, id: OutboxId, _error: &str) -> Result<(), OutboxError> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(message) = state.messages.iter_mut().find(|m| m.id == id) {
+            message.attempts += 1;
+        }
+        Ok(())
+    }
 }

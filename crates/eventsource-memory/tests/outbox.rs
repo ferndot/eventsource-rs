@@ -13,9 +13,18 @@ use serde_json::json;
 #[derive(Default)]
 struct RecordingPublisher {
     seen: Mutex<Vec<u64>>,
+    fail_on: Option<u64>,
 }
 
 impl RecordingPublisher {
+    /// A publisher that rejects the message numbered `n`.
+    fn failing_on(n: u64) -> Self {
+        Self {
+            fail_on: Some(n),
+            ..Self::default()
+        }
+    }
+
     fn seen(&self) -> Vec<u64> {
         self.seen.lock().expect("lock").clone()
     }
@@ -24,6 +33,9 @@ impl RecordingPublisher {
 impl OutboxPublisher for RecordingPublisher {
     async fn publish(&self, message: &OutboxMessage) -> Result<(), BackendError> {
         let n = message.payload["n"].as_u64().expect("n");
+        if self.fail_on == Some(n) {
+            return Err("bus unavailable".into());
+        }
         self.seen.lock().expect("lock").push(n);
         Ok(())
     }
@@ -71,4 +83,36 @@ async fn relay_publishes_pending_and_marks_them_published() {
     let second = relay(&outbox, &publisher, 10).await.expect("relay again");
     assert_eq!(second.published, 0);
     assert_eq!(publisher.seen(), [0, 1, 2], "nothing published twice");
+}
+
+#[tokio::test]
+async fn publisher_failure_keeps_message_pending_with_attempt_counted() {
+    let outbox = InMemoryOutboxStore::new();
+    let ids = [
+        outbox.enqueue(message("orders", 0)).await.expect("enqueue"),
+        outbox.enqueue(message("orders", 1)).await.expect("enqueue"),
+        outbox.enqueue(message("orders", 2)).await.expect("enqueue"),
+    ];
+
+    let report = relay(&outbox, &RecordingPublisher::failing_on(1), 10)
+        .await
+        .expect("relay itself succeeds");
+    assert_eq!(report.published, 1);
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].id, ids[1]);
+    assert!(report.failed[0].error.contains("bus unavailable"));
+
+    let pending = outbox.fetch_pending(10).await.expect("fetch");
+    let state: Vec<_> = pending.iter().map(|m| (m.id, m.attempts)).collect();
+    assert_eq!(
+        state,
+        [(ids[1], 1), (ids[2], 0)],
+        "failed one kept, order kept, later one untouched"
+    );
+
+    // Once the bus is back the same messages go out, in order.
+    let publisher = RecordingPublisher::default();
+    let report = relay(&outbox, &publisher, 10).await.expect("relay");
+    assert_eq!(report.published, 2);
+    assert_eq!(publisher.seen(), [1, 2]);
 }
