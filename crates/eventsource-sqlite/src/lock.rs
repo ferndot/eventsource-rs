@@ -41,11 +41,6 @@ impl<C: Clock> SqliteLockStore<C> {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn expiry(&self, now: DateTime<Utc>, ttl: LockTtl) -> DateTime<Utc> {
-        let ttl = chrono::Duration::from_std(ttl.get()).unwrap_or(chrono::Duration::MAX);
-        now.checked_add_signed(ttl).unwrap_or(DateTime::<Utc>::MAX_UTC)
-    }
-
     fn acquire_blocking(
         &self,
         name: &LockName,
@@ -53,7 +48,7 @@ impl<C: Clock> SqliteLockStore<C> {
         ttl: LockTtl,
     ) -> Result<Option<LockLease>, SqliteError> {
         let now = self.clock.now();
-        let expires_at = self.expiry(now, ttl);
+        let expires_at = expiry(now, ttl);
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let held: Option<(String, i64)> = tx
@@ -76,7 +71,11 @@ impl<C: Clock> SqliteLockStore<C> {
             params![name.as_str(), owner.as_str(), expires_at.timestamp_micros()],
         )?;
         tx.commit()?;
-        Ok(Some(LockLease::new(name.clone(), owner.clone(), expires_at)))
+        Ok(Some(LockLease::new(
+            name.clone(),
+            owner.clone(),
+            expires_at,
+        )))
     }
 }
 
@@ -109,7 +108,7 @@ impl<C: Clock> LockStore for SqliteLockStore<C> {
         ttl: LockTtl,
     ) -> Result<Option<LockLease>, LockError> {
         let now = self.clock.now();
-        let expires_at = self.expiry(now, ttl);
+        let expires_at = expiry(now, ttl);
         let conn = self.lock();
         let updated = conn
             .execute(
@@ -125,4 +124,10 @@ impl<C: Clock> LockStore for SqliteLockStore<C> {
             .map_err(SqliteError::from)?;
         Ok((updated > 0).then(|| LockLease::new(name.clone(), owner.clone(), expires_at)))
     }
+}
+
+fn expiry(now: DateTime<Utc>, ttl: LockTtl) -> DateTime<Utc> {
+    let ttl = chrono::Duration::from_std(ttl.get()).unwrap_or(chrono::Duration::MAX);
+    now.checked_add_signed(ttl)
+        .unwrap_or(DateTime::<Utc>::MAX_UTC)
 }

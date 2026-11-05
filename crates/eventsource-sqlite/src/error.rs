@@ -3,8 +3,8 @@
 //! They reach callers boxed inside the core `Backend` error variants; downcast
 //! to [`SqliteError`] to tell a database failure from corrupt stored data.
 
-use eventsource_core::lock::LockError;
 use eventsource_core::error::{CheckpointError, DeadLetterError, SnapshotError, StoreError};
+use eventsource_core::lock::LockError;
 
 /// What went wrong inside the `SQLite` adapters.
 #[derive(Debug, thiserror::Error)]

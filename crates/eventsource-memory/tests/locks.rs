@@ -56,7 +56,10 @@ async fn release_by_owner_frees_the_lock_and_by_non_owner_does_nothing() {
         .await
         .expect("acquire");
 
-    let by_stranger = locks.release(&name("relay"), &owner("b")).await.expect("release");
+    let by_stranger = locks
+        .release(&name("relay"), &owner("b"))
+        .await
+        .expect("release");
     assert!(!by_stranger, "a non-owner releases nothing");
     assert_eq!(
         locks
@@ -67,7 +70,10 @@ async fn release_by_owner_frees_the_lock_and_by_non_owner_does_nothing() {
         "lock must still be held by a"
     );
 
-    let by_owner = locks.release(&name("relay"), &owner("a")).await.expect("release");
+    let by_owner = locks
+        .release(&name("relay"), &owner("a"))
+        .await
+        .expect("release");
     assert!(by_owner);
     assert!(
         locks
@@ -78,7 +84,10 @@ async fn release_by_owner_frees_the_lock_and_by_non_owner_does_nothing() {
         "released lock is free"
     );
 
-    let again = locks.release(&name("never-held"), &owner("a")).await.expect("release");
+    let again = locks
+        .release(&name("never-held"), &owner("a"))
+        .await
+        .expect("release");
     assert!(!again, "releasing an unheld lock is a no-op");
 }
 
@@ -110,7 +119,10 @@ async fn another_owner_acquires_once_the_ttl_has_passed() {
     assert_eq!(lease.expires_at(), clock.now() + Duration::from_secs(30));
 
     assert!(
-        !locks.release(&name("relay"), &owner("a")).await.expect("release"),
+        !locks
+            .release(&name("relay"), &owner("a"))
+            .await
+            .expect("release"),
         "the old owner cannot release the new lease"
     );
 }
@@ -135,7 +147,7 @@ async fn renew_by_owner_extends_expiry_and_by_non_owner_is_refused() {
         .await
         .expect("renew")
         .expect("owner may renew");
-    assert_eq!(renewed.expires_at(), clock.now() + Duration::from_secs(60));
+    assert_eq!(renewed.expires_at(), clock.now() + Duration::from_mins(1));
 
     // Past the original expiry (t=30) but inside the renewed one (t=80).
     clock.advance(Duration::from_secs(40));

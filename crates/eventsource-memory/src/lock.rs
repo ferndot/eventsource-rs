@@ -55,7 +55,11 @@ impl<C: Clock> LockStore for InMemoryLockStore<C> {
             name.as_str().to_owned(),
             (owner.as_str().to_owned(), expires_at),
         );
-        Ok(Some(LockLease::new(name.clone(), owner.clone(), expires_at)))
+        Ok(Some(LockLease::new(
+            name.clone(),
+            owner.clone(),
+            expires_at,
+        )))
     }
 
     async fn release(&self, name: &LockName, owner: &LockOwner) -> Result<bool, LockError> {
@@ -82,7 +86,11 @@ impl<C: Clock> LockStore for InMemoryLockStore<C> {
         match leases.get_mut(name.as_str()) {
             Some((holder, until)) if holder == owner.as_str() && *until > now => {
                 *until = expires_at;
-                Ok(Some(LockLease::new(name.clone(), owner.clone(), expires_at)))
+                Ok(Some(LockLease::new(
+                    name.clone(),
+                    owner.clone(),
+                    expires_at,
+                )))
             }
             _ => Ok(None),
         }

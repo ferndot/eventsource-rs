@@ -22,7 +22,8 @@ fn ttl(secs: u64) -> LockTtl {
 async fn second_owner_is_refused_until_the_ttl_passes() {
     let dir = tempfile::tempdir().expect("tempdir");
     let clock = Arc::new(ManualClock::default());
-    let locks = SqliteLockStore::open(dir.path().join("locks.db"), Arc::clone(&clock)).expect("open");
+    let locks =
+        SqliteLockStore::open(dir.path().join("locks.db"), Arc::clone(&clock)).expect("open");
 
     let lease = locks
         .try_acquire(&name("relay"), &owner("a"), ttl(30))
@@ -60,15 +61,24 @@ async fn second_owner_is_refused_until_the_ttl_passes() {
 async fn release_and_renew_follow_ownership() {
     let dir = tempfile::tempdir().expect("tempdir");
     let clock = Arc::new(ManualClock::default());
-    let locks = SqliteLockStore::open(dir.path().join("locks.db"), Arc::clone(&clock)).expect("open");
+    let locks =
+        SqliteLockStore::open(dir.path().join("locks.db"), Arc::clone(&clock)).expect("open");
     locks
         .try_acquire(&name("relay"), &owner("a"), ttl(30))
         .await
         .expect("acquire");
 
-    assert!(!locks.release(&name("relay"), &owner("b")).await.expect("release"));
+    assert!(
+        !locks
+            .release(&name("relay"), &owner("b"))
+            .await
+            .expect("release")
+    );
     assert_eq!(
-        locks.renew(&name("relay"), &owner("b"), ttl(60)).await.expect("renew"),
+        locks
+            .renew(&name("relay"), &owner("b"), ttl(60))
+            .await
+            .expect("renew"),
         None
     );
     clock.advance(Duration::from_secs(20));
@@ -77,7 +87,7 @@ async fn release_and_renew_follow_ownership() {
         .await
         .expect("renew")
         .expect("owner may renew");
-    assert_eq!(renewed.expires_at(), clock.now() + Duration::from_secs(60));
+    assert_eq!(renewed.expires_at(), clock.now() + Duration::from_mins(1));
 
     // Past the original expiry (t=30) but inside the renewed one (t=80).
     clock.advance(Duration::from_secs(40));
@@ -90,7 +100,12 @@ async fn release_and_renew_follow_ownership() {
         "renewal keeps the lock held"
     );
 
-    assert!(locks.release(&name("relay"), &owner("a")).await.expect("release"));
+    assert!(
+        locks
+            .release(&name("relay"), &owner("a"))
+            .await
+            .expect("release")
+    );
     assert!(
         locks
             .try_acquire(&name("relay"), &owner("b"), ttl(30))
@@ -172,10 +187,7 @@ fn two_handles_racing_for_a_free_lock_produce_exactly_one_winner() {
             results.iter().all(Result::is_ok),
             "round {round}: a refusal is a value, never an error: {results:?}"
         );
-        let wins = results
-            .iter()
-            .filter(|r| matches!(r, Ok(Some(_))))
-            .count();
+        let wins = results.iter().filter(|r| matches!(r, Ok(Some(_)))).count();
         assert_eq!(wins, 1, "round {round}: exactly one winner: {results:?}");
     }
 }
