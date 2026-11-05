@@ -147,3 +147,28 @@ async fn publish_to_unreachable_redis_returns_bus_error() {
 
     assert!(matches!(result, Err(eventsource_core::error::BusError::Backend(_))));
 }
+
+#[tokio::test]
+async fn max_len_keeps_only_the_newest_entries() {
+    let stream = unique_stream();
+    let config = RedisBusConfig {
+        max_len: Some(3),
+        ..RedisBusConfig::new(stream.clone())
+    };
+    let publisher = RedisPublisher::new(&redis_url(), config).unwrap();
+    let sent: Vec<_> = (1..=10).map(|n| envelope("Step", n)).collect();
+
+    publisher.publish(&sent).await.unwrap();
+
+    let kept: Vec<String> = raw_entries(&stream)
+        .await
+        .ids
+        .iter()
+        .map(|e| e.get("event_id").unwrap())
+        .collect();
+    let newest: Vec<String> = sent[7..]
+        .iter()
+        .map(|e| e.record.meta.event_id.to_string())
+        .collect();
+    assert_eq!(kept, newest);
+}

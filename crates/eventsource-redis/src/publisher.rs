@@ -3,6 +3,7 @@
 use eventsource_core::bus::EventPublisher;
 use eventsource_core::envelope::EventEnvelope;
 use eventsource_core::error::BusError;
+use redis::streams::StreamMaxlen;
 
 use crate::config::RedisBusConfig;
 use crate::connection::LazyConnection;
@@ -33,7 +34,16 @@ impl EventPublisher for RedisPublisher {
         pipe.atomic();
         for envelope in envelopes {
             let fields = wire::encode(envelope);
-            pipe.xadd(&self.config.stream, "*", &fields).ignore();
+            match self.config.max_len {
+                Some(max) => pipe.xadd_maxlen(
+                    &self.config.stream,
+                    StreamMaxlen::Equals(max),
+                    "*",
+                    &fields,
+                ),
+                None => pipe.xadd(&self.config.stream, "*", &fields),
+            }
+            .ignore();
         }
         let mut conn = self.connection.get().await.map_err(backend)?;
         pipe.query_async::<()>(&mut conn).await.map_err(backend)

@@ -5,7 +5,7 @@
 pub struct RedisBusConfig {
     /// Name of the Redis Stream (the key) events are appended to.
     pub stream: String,
-    /// Approximate cap on stream length (`XADD MAXLEN ~`); `None` keeps everything.
+    /// Cap on stream length, enforced exactly (`XADD MAXLEN`) on every append; `None` keeps everything.
     pub max_len: Option<usize>,
 }
 
