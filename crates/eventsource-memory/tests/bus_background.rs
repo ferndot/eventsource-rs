@@ -112,3 +112,15 @@ async fn background_panic_is_isolated_and_recorded_as_a_failure() {
     assert_eq!(failures.len(), 1);
     assert!(failures[0].error.to_string().contains("handler exploded"));
 }
+
+#[tokio::test]
+async fn taking_background_failures_drains_them() {
+    let bus = Arc::new(InMemoryEventBus::new());
+    bus.subscribe_all(handler(|_e: EventEnvelope| async { explode() }));
+
+    bus.publish_background(vec![envelope(1)]);
+    bus.flush().await;
+
+    assert_eq!(bus.take_background_failures().len(), 1);
+    assert!(bus.take_background_failures().is_empty());
+}
