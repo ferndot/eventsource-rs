@@ -126,6 +126,17 @@ pub enum DecodeError {
     },
 }
 
+/// Error from a dead-letter store.
+#[derive(Debug, thiserror::Error)]
+pub enum DeadLetterError {
+    /// No dead-letter store is configured.
+    #[error("no dead-letter store is configured")]
+    NotConfigured,
+    /// The backend failed. The cause is available through `source()`.
+    #[error("dead-letter backend failed")]
+    Backend(#[source] BackendError),
+}
+
 /// Error from a snapshot store. Callers treat every variant as "no usable snapshot".
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
@@ -191,6 +202,17 @@ pub enum SubscriptionError {
         /// The failure from the last attempt.
         #[source]
         last: BusError,
+    },
+    /// An event was out of retries but could not be parked. The checkpoint stays before its page.
+    #[error("subscription {name:?}: failed to park an event after {attempts} attempts")]
+    DeadLetter {
+        /// The subscription that tried to park.
+        name: String,
+        /// How many delivery attempts the event had used.
+        attempts: u32,
+        /// Why parking failed.
+        #[source]
+        source: DeadLetterError,
     },
     /// The feed could not be read.
     #[error(transparent)]
