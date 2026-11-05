@@ -5,79 +5,13 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use eventsource_core::envelope::StreamReadOptions;
-use eventsource_core::error::{BackendError, OutboxError, RepositoryError};
-use eventsource_core::outbox::{
-    NewOutboxMessage, OutboxMessage, OutboxPublisher, OutboxStore, relay,
-};
+use eventsource_core::error::{OutboxError, RepositoryError};
+use eventsource_core::outbox::{NewOutboxMessage, OutboxStore, relay};
 use eventsource_core::store::AggregateStore;
-use eventsource_core::{
-    AggregateId, AggregateRepository, Category, CommandContext, Decider, DomainEvent, StreamId,
-    Version,
-};
+use eventsource_core::{AggregateId, AggregateRepository, CommandContext, Version};
 use eventsource_postgres::{PostgresEventStore, PostgresOutboxStore};
-use serde::{Deserialize, Serialize};
+use eventsource_testing::fixtures::{CapturingPublisher, Counter, stream_for as counter_stream};
 use serde_json::json;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-enum CounterEvent {
-    Added(u64),
-}
-
-impl DomainEvent for CounterEvent {
-    fn event_types() -> &'static [&'static str] {
-        &["Added"]
-    }
-
-    fn event_type(&self) -> &'static str {
-        "Added"
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct CounterState {
-    sum: u64,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("never rejected")]
-struct Never;
-
-struct Counter;
-
-impl Decider for Counter {
-    type Command = u64;
-    type Event = CounterEvent;
-    type State = CounterState;
-    type Error = Never;
-
-    const AGGREGATE_TYPE: &'static str = "Counter";
-
-    fn initial_state() -> CounterState {
-        CounterState { sum: 0 }
-    }
-
-    fn decide(_: &CounterState, amount: u64) -> Result<Vec<CounterEvent>, Never> {
-        Ok(vec![CounterEvent::Added(amount)])
-    }
-
-    fn evolve(state: &CounterState, event: &CounterEvent) -> CounterState {
-        let CounterEvent::Added(n) = event;
-        CounterState { sum: state.sum + n }
-    }
-}
-
-fn counter_stream(id: AggregateId) -> StreamId {
-    StreamId::new(id, Category::new("Counter").expect("category"))
-}
-
-struct CapturingPublisher(Arc<Mutex<Vec<serde_json::Value>>>);
-
-impl OutboxPublisher for CapturingPublisher {
-    async fn publish(&self, message: &OutboxMessage) -> Result<(), BackendError> {
-        self.0.lock().expect("lock").push(message.payload.clone());
-        Ok(())
-    }
-}
 
 async fn events(schema: &str) -> PostgresEventStore {
     PostgresEventStore::open(&common::database_url(), schema)
@@ -152,7 +86,7 @@ async fn failed_enqueue_rolls_back_the_appended_event() {
     let id = AggregateId::new();
 
     let result = repo
-        .execute_with_outbox(id, 5, &CommandContext::new(), |_| {
+        .execute_with_outbox(id, vec![5], &CommandContext::new(), |_| {
             NewOutboxMessage::new("", json!({}))
         })
         .await;
@@ -174,7 +108,7 @@ async fn atomic_append_survives_reopen_and_relay_delivers_after_it() {
     let id = AggregateId::new();
     {
         let repo = AggregateRepository::<Counter, _>::new(events(&schema).await).expect("repo");
-        repo.execute_with_outbox(id, 7, &CommandContext::new(), |record| {
+        repo.execute_with_outbox(id, vec![7], &CommandContext::new(), |record| {
             NewOutboxMessage::new("counter-events", record.payload.clone())
         })
         .await

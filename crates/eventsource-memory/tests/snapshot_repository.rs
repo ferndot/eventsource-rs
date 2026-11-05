@@ -12,10 +12,11 @@ use eventsource_core::event::{EventMeta, EventRecord};
 use eventsource_core::snapshot::{Snapshot, SnapshotPolicy, SnapshotStore};
 use eventsource_core::store::AggregateStore;
 use eventsource_core::{
-    AggregateId, AggregateRepository, Category, CommandContext, CorrelationId, Decider,
-    DomainEvent, ExpectedVersion, StreamId, Version,
+    AggregateId, AggregateRepository, CommandContext, CorrelationId, Decider, DomainEvent,
+    ExpectedVersion, StreamId, Version,
 };
 use eventsource_memory::{InMemoryEventStore, InMemorySnapshotStore};
+use eventsource_testing::fixtures::stream_for as stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -74,10 +75,6 @@ impl Decider for Counter {
 
 type Events = Arc<InMemoryEventStore>;
 type Snapshots = Arc<InMemorySnapshotStore>;
-
-fn stream(id: AggregateId) -> StreamId {
-    StreamId::new(id, Category::new("Counter").expect("category"))
-}
 
 fn meta() -> EventMeta {
     EventMeta::new(Utc::now(), CorrelationId::new())

@@ -2,61 +2,9 @@
 
 use std::sync::Arc;
 
-use eventsource_core::{
-    AggregateId, AggregateRepository, CommandContext, Decider, DomainEvent, TenantId,
-};
+use eventsource_core::{AggregateId, AggregateRepository, CommandContext, TenantId};
 use eventsource_sqlite::SqliteEventStore;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-enum CounterEvent {
-    Added(u64),
-}
-
-impl DomainEvent for CounterEvent {
-    fn event_types() -> &'static [&'static str] {
-        &["Added"]
-    }
-
-    fn event_type(&self) -> &'static str {
-        "Added"
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct CounterState {
-    sum: u64,
-}
-
-struct Add(u64);
-
-#[derive(Debug, thiserror::Error)]
-#[error("never rejected")]
-struct Never;
-
-struct Counter;
-
-impl Decider for Counter {
-    type Command = Add;
-    type Event = CounterEvent;
-    type State = CounterState;
-    type Error = Never;
-
-    const AGGREGATE_TYPE: &'static str = "Counter";
-
-    fn initial_state() -> CounterState {
-        CounterState { sum: 0 }
-    }
-
-    fn decide(_: &CounterState, Add(n): Add) -> Result<Vec<CounterEvent>, Never> {
-        Ok(vec![CounterEvent::Added(n)])
-    }
-
-    fn evolve(state: &CounterState, event: &CounterEvent) -> CounterState {
-        let CounterEvent::Added(n) = event;
-        CounterState { sum: state.sum + n }
-    }
-}
+use eventsource_testing::fixtures::Counter;
 
 type Store = Arc<SqliteEventStore>;
 
@@ -80,12 +28,18 @@ async fn tenant_isolation_holds_across_reopen() {
 
     {
         let store: Store = Arc::new(SqliteEventStore::open(&path).expect("open"));
-        repo(&store, a).execute(id, Add(1), &ctx).await.expect("a1");
+        repo(&store, a)
+            .execute(id, vec![1], &ctx)
+            .await
+            .expect("a1");
         repo(&store, b)
-            .execute(id, Add(10), &ctx)
+            .execute(id, vec![10], &ctx)
             .await
             .expect("b1");
-        repo(&store, a).execute(id, Add(2), &ctx).await.expect("a2");
+        repo(&store, a)
+            .execute(id, vec![2], &ctx)
+            .await
+            .expect("a2");
     }
 
     let store: Store = Arc::new(SqliteEventStore::open(&path).expect("reopen"));

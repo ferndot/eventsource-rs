@@ -135,7 +135,7 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
-    use crate::decider::test_support::{Counter, CounterCommand, CounterEvent};
+    use crate::decider::test_support::{Counter, CounterCommand, CounterEvent, Rejected};
     use crate::ids::CorrelationId;
 
     fn stamp() -> EventMeta {
@@ -189,7 +189,10 @@ mod tests {
             stamped += 1;
             stamp()
         });
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(Rejected)),
+            "the decider's own rejection must be returned unchanged"
+        );
         assert_eq!(stamped, 0);
         assert_eq!(*agg.state(), 4);
         assert_eq!(agg.version(), Version::new(1));

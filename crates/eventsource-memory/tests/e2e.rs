@@ -521,23 +521,40 @@ async fn wake_signal_delivers_before_the_poll_interval() {
 
 #[tokio::test]
 async fn slow_subscriber_does_not_delay_a_save() {
+    // The bound only has to be larger than any plausible scheduling delay on a loaded
+    // CI machine. It does not have to be tight, because the subscriber below is held
+    // until *after* the save returns: a save that waited for the subscriber could never
+    // finish, so it would exceed any bound. The test therefore fails deterministically
+    // for a blocking save and never fails merely because the machine is slow.
+    const SAVE_BOUND: Duration = Duration::from_secs(10);
+
     let (store, repo) = store_and_repo();
-    let gate = Arc::new(tokio::sync::Notify::new());
+    // No permits until released, so the handler blocks for as long as the test wants.
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let entered = Arc::new(tokio::sync::Notify::new());
     let bus = Arc::new(InMemoryEventBus::new());
-    let waiter = Arc::clone(&gate);
+    let (waiter, signal) = (Arc::clone(&gate), Arc::clone(&entered));
     bus.subscribe_all(handler(move |_e: EventEnvelope| {
-        let waiter = Arc::clone(&waiter);
+        let (waiter, signal) = (Arc::clone(&waiter), Arc::clone(&signal));
         async move {
-            waiter.notified().await;
+            signal.notify_one();
+            let _permit = waiter.acquire().await.expect("gate open");
             Ok::<(), BackendError>(())
         }
     }));
     let checkpoints = Arc::new(InMemoryCheckpointStore::new());
     let mut runner = runner_for(&store, &checkpoints, &bus, SubscriptionConfig::new("slow"));
+
+    // Give the subscriber an event and wait until it is stuck inside its handler, so
+    // the save below really does run while a subscriber is blocked.
+    place_orders(&repo, 1).await;
     let subscriber = tokio::spawn(async move { runner.run_until_caught_up().await });
+    tokio::time::timeout(Duration::from_secs(30), entered.notified())
+        .await
+        .expect("the subscriber reached its handler");
 
     let saved = tokio::time::timeout(
-        Duration::from_secs(1),
+        SAVE_BOUND,
         repo.execute(
             AggregateId::new(),
             OrderCommand::Place { total: 1 },
@@ -549,7 +566,7 @@ async fn slow_subscriber_does_not_delay_a_save() {
     .expect("place");
     assert!(saved.is_some());
 
-    gate.notify_one();
+    gate.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
     subscriber.await.expect("join").expect("run");
 }
 

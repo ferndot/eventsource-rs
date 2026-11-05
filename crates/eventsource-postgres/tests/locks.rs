@@ -6,19 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eventsource_core::Clock;
-use eventsource_core::lock::{LockName, LockOwner, LockStore, LockTtl};
+use eventsource_core::lock::LockStore;
 use eventsource_postgres::PostgresLockStore;
 use eventsource_testing::ManualClock;
-
-fn name(n: &str) -> LockName {
-    LockName::new(n).expect("name")
-}
-fn owner(o: &str) -> LockOwner {
-    LockOwner::new(o).expect("owner")
-}
-fn ttl(secs: u64) -> LockTtl {
-    LockTtl::new(Duration::from_secs(secs)).expect("ttl")
-}
+use eventsource_testing::fixtures::{lock_name as name, lock_owner as owner, lock_ttl as ttl};
 
 async fn open(schema: &str, clock: &Arc<ManualClock>) -> PostgresLockStore<Arc<ManualClock>> {
     PostgresLockStore::open(&common::database_url(), schema, Arc::clone(clock))

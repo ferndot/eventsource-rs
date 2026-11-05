@@ -7,20 +7,10 @@ use std::sync::Arc;
 use chrono::Utc;
 use eventsource_core::error::SnapshotError;
 use eventsource_core::snapshot::{Snapshot, SnapshotPolicy, SnapshotStore};
-use eventsource_core::{
-    AggregateId, AggregateRepository, Category, CommandContext, Decider, DomainEvent, StreamId,
-    Version,
-};
+use eventsource_core::{AggregateId, AggregateRepository, CommandContext, StreamId, Version};
 use eventsource_postgres::{PostgresEventStore, PostgresSnapshotStore};
-use serde::{Deserialize, Serialize};
+use eventsource_testing::fixtures::{Counter, CounterState, stream};
 use serde_json::json;
-
-fn stream() -> StreamId {
-    StreamId::new(
-        AggregateId::new(),
-        Category::new("Counter").expect("category"),
-    )
-}
 
 fn snapshot(stream: &StreamId, version: u64, sum: u64) -> Snapshot {
     Snapshot {
@@ -101,58 +91,6 @@ async fn an_unreadable_row_is_reported_as_corrupt() {
 }
 
 // ---- Through the repository, with events and snapshots in one file. ----
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-enum CounterEvent {
-    Added(u64),
-}
-
-impl DomainEvent for CounterEvent {
-    fn event_types() -> &'static [&'static str] {
-        &["Added"]
-    }
-
-    fn event_type(&self) -> &'static str {
-        "Added"
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct CounterState {
-    sum: u64,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("never rejected")]
-struct Never;
-
-struct Counter;
-
-impl Decider for Counter {
-    type Command = Vec<u64>;
-    type Event = CounterEvent;
-    type State = CounterState;
-    type Error = Never;
-
-    const AGGREGATE_TYPE: &'static str = "Counter";
-
-    fn state_schema_version() -> u32 {
-        3
-    }
-
-    fn initial_state() -> CounterState {
-        CounterState { sum: 0 }
-    }
-
-    fn decide(_: &CounterState, command: Vec<u64>) -> Result<Vec<CounterEvent>, Never> {
-        Ok(command.into_iter().map(CounterEvent::Added).collect())
-    }
-
-    fn evolve(state: &CounterState, event: &CounterEvent) -> CounterState {
-        let CounterEvent::Added(n) = event;
-        CounterState { sum: state.sum + n }
-    }
-}
 
 async fn repo(
     schema: &str,

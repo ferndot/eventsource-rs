@@ -6,6 +6,7 @@
 //! checks cannot affect one another.
 
 mod clock;
+pub mod fixtures;
 mod recording;
 
 pub use clock::ManualClock;
@@ -36,6 +37,11 @@ fn stream(category: &str) -> StreamId {
         Category::new(category).expect("valid category"),
     )
 }
+
+/// How many checks [`run_all`] runs, which is how many stores it asks its factory for.
+///
+/// Backends that must open their stores ahead of time size their pool with this.
+pub const CHECK_COUNT: usize = 11;
 
 /// Runs every conformance check, each against a fresh store from `make`.
 pub async fn run_all<S, F>(make: F)
