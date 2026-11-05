@@ -141,6 +141,17 @@ pub enum DeadLetterError {
     Backend(#[source] BackendError),
 }
 
+/// Error from an outbox store.
+#[derive(Debug, thiserror::Error)]
+pub enum OutboxError {
+    /// The message was rejected before it was stored.
+    #[error("invalid outbox message: {0}")]
+    Invalid(String),
+    /// The backend failed. The cause is available through `source()`.
+    #[error("outbox backend failed")]
+    Backend(#[source] BackendError),
+}
+
 /// Error from a snapshot store. Callers treat every variant as "no usable snapshot".
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
