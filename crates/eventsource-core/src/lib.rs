@@ -17,6 +17,7 @@ pub mod event;
 pub mod ids;
 pub mod live;
 pub mod lock;
+pub mod manager;
 pub mod outbox;
 pub mod ownership;
 pub mod position;
