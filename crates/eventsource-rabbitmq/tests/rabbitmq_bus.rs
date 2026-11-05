@@ -79,3 +79,23 @@ async fn published_envelope_reaches_the_queue_consumer() {
     consumer.close().await.unwrap();
     cleanup(&config).await;
 }
+
+#[tokio::test]
+async fn envelopes_arrive_in_publish_order() {
+    let config = unique_config();
+    let consumer = RabbitMqConsumer::connect(&amqp_url(), config.clone()).await.unwrap();
+    let publisher = RabbitMqPublisher::new(&amqp_url(), config.clone());
+    let first: Vec<_> = (1..=5).map(|n| envelope("Step", n)).collect();
+    let second: Vec<_> = (6..=8).map(|n| envelope("Step", n)).collect();
+
+    publisher.publish(&first).await.unwrap();
+    publisher.publish(&second).await.unwrap();
+
+    let got = consumer.read_all(None, page(100)).await.unwrap();
+    let ids: Vec<_> = got.iter().map(|e| e.record.meta.event_id).collect();
+    let expected: Vec<_> = first.iter().chain(&second).map(|e| e.record.meta.event_id).collect();
+    assert_eq!(ids, expected);
+
+    consumer.close().await.unwrap();
+    cleanup(&config).await;
+}
