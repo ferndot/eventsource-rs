@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use futures::stream::{self, BoxStream};
 use tokio::sync::watch;
 
 use eventsource_core::Category;
@@ -13,6 +14,7 @@ use eventsource_core::envelope::{
 use eventsource_core::error::{PositionError, StoreError};
 use eventsource_core::event::EventRecord;
 use eventsource_core::ids::EventId;
+use eventsource_core::live::LiveFeed;
 use eventsource_core::store::{AggregateStore, GlobalFeed};
 use eventsource_core::version::ExpectedVersion;
 use eventsource_core::{Clock, EventRegistry, Position, StreamId, SystemClock, Version};
@@ -259,5 +261,11 @@ impl GlobalFeed for InMemoryEventStore {
             .events
             .last()
             .map(|envelope| envelope.position.clone()))
+    }
+}
+
+impl LiveFeed for InMemoryEventStore {
+    fn subscribe_live(self: Arc<Self>) -> BoxStream<'static, EventEnvelope> {
+        Box::pin(stream::pending())
     }
 }
