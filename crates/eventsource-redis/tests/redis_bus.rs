@@ -1,0 +1,240 @@
+//! Tests against a real Redis. Set `REDIS_URL`; defaults to `redis://127.0.0.1:6390`.
+#![allow(missing_docs)]
+
+use chrono::Utc;
+use eventsource_core::bus::EventPublisher;
+use eventsource_core::envelope::EventEnvelope;
+use eventsource_core::event::{EventMeta, EventRecord};
+use eventsource_core::ids::{AggregateId, CorrelationId};
+use eventsource_core::position::Position;
+use eventsource_core::stream_id::{Category, StreamId};
+use eventsource_core::version::Version;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
+
+use eventsource_core::bus::handler;
+use eventsource_core::checkpoint::CheckpointStore;
+use eventsource_core::envelope::FeedReadOptions;
+use eventsource_core::subscription::{SubscriptionConfig, SubscriptionRunner};
+use eventsource_memory::{InMemoryCheckpointStore, InMemoryEventBus};
+use eventsource_core::error::StoreError;
+use eventsource_core::store::GlobalFeed;
+use eventsource_redis::{RedisBusConfig, RedisPublisher, RedisStreamReader};
+use redis::AsyncCommands;
+use redis::streams::StreamRangeReply;
+use serde_json::json;
+
+fn redis_url() -> String {
+    std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6390".to_owned())
+}
+
+fn unique_stream() -> String {
+    format!("test-events-{}", uuid::Uuid::new_v4())
+}
+
+fn envelope(event_type: &str, n: u64) -> EventEnvelope {
+    let meta = EventMeta::new(Utc::now(), CorrelationId::new());
+    EventEnvelope {
+        record: EventRecord::new(meta, event_type, json!({ "n": n })),
+        stream: StreamId::new(AggregateId::new(), Category::new("Order").unwrap()),
+        stream_version: Version::new(n),
+        position: Position::new("source", n),
+        stored_at: Utc::now(),
+    }
+}
+
+async fn raw_entries(stream: &str) -> StreamRangeReply {
+    let client = redis::Client::open(redis_url()).unwrap();
+    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+    conn.xrange_all(stream).await.unwrap()
+}
+
+#[tokio::test]
+async fn publish_appends_envelope_to_configured_stream() {
+    let stream = unique_stream();
+    let publisher =
+        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let env = envelope("OrderPlaced", 1);
+
+    publisher.publish(std::slice::from_ref(&env)).await.unwrap();
+
+    let reply = raw_entries(&stream).await;
+    assert_eq!(reply.ids.len(), 1);
+    let entry = &reply.ids[0];
+    let get = |k: &str| -> String { entry.get(k).unwrap() };
+    assert_eq!(get("event_id"), env.record.meta.event_id.to_string());
+    assert_eq!(get("event_type"), "OrderPlaced");
+    let payload: serde_json::Value = serde_json::from_str(&get("payload")).unwrap();
+    assert_eq!(payload, env.record.payload);
+}
+
+#[tokio::test]
+async fn publish_preserves_order_across_batches() {
+    let stream = unique_stream();
+    let publisher =
+        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let first: Vec<_> = (1..=5).map(|n| envelope("Step", n)).collect();
+    let second: Vec<_> = (6..=8).map(|n| envelope("Step", n)).collect();
+
+    publisher.publish(&first).await.unwrap();
+    publisher.publish(&second).await.unwrap();
+
+    let expected: Vec<String> = first
+        .iter()
+        .chain(&second)
+        .map(|e| e.record.meta.event_id.to_string())
+        .collect();
+    let actual: Vec<String> = raw_entries(&stream)
+        .await
+        .ids
+        .iter()
+        .map(|e| e.get("event_id").unwrap())
+        .collect();
+    assert_eq!(actual, expected);
+}
+
+#[tokio::test]
+async fn reader_decodes_entries_back_into_envelopes() {
+    let stream = unique_stream();
+    let publisher =
+        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let reader = RedisStreamReader::new(&redis_url(), stream.clone()).unwrap();
+    let sent: Vec<_> = (1..=3).map(|n| envelope("Step", n)).collect();
+    publisher.publish(&sent).await.unwrap();
+
+    let got = reader
+        .read_all(None, FeedReadOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(got.len(), 3);
+    for (sent, got) in sent.iter().zip(&got) {
+        assert_eq!(got.record, sent.record);
+        assert_eq!(got.stream, sent.stream);
+        assert_eq!(got.stream_version, sent.stream_version);
+        assert_eq!(got.stored_at, sent.stored_at);
+    }
+    // Positions are the reader's own, so they can be checkpointed, and they ascend.
+    assert_ne!(got[0].position, sent[0].position);
+    assert_eq!(
+        got[0].position.try_cmp(&got[1].position),
+        Ok(std::cmp::Ordering::Less)
+    );
+    let current = reader.current_position().await.unwrap();
+    assert_eq!(current.as_ref(), Some(&got[2].position));
+}
+
+#[tokio::test]
+async fn reader_reports_malformed_entry_as_error() {
+    let stream = unique_stream();
+    let client = redis::Client::open(redis_url()).unwrap();
+    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+    let _: String = conn
+        .xadd(&stream, "*", &[("envelope", "{not json")])
+        .await
+        .unwrap();
+    let _: String = conn
+        .xadd(&stream, "*", &[("unrelated", "x")])
+        .await
+        .unwrap();
+    let reader = RedisStreamReader::new(&redis_url(), stream).unwrap();
+
+    let result = reader.read_all(None, FeedReadOptions::default()).await;
+
+    assert!(matches!(result, Err(StoreError::Backend(_))));
+}
+
+#[tokio::test]
+async fn publish_to_unreachable_redis_returns_bus_error() {
+    // Port 1 refuses connections.
+    let publisher =
+        RedisPublisher::new("redis://127.0.0.1:1", RedisBusConfig::new(unique_stream())).unwrap();
+
+    let result = publisher.publish(&[envelope("OrderPlaced", 1)]).await;
+
+    assert!(matches!(result, Err(eventsource_core::error::BusError::Backend(_))));
+}
+
+#[tokio::test]
+async fn max_len_keeps_only_the_newest_entries() {
+    let stream = unique_stream();
+    let config = RedisBusConfig {
+        max_len: Some(3),
+        ..RedisBusConfig::new(stream.clone())
+    };
+    let publisher = RedisPublisher::new(&redis_url(), config).unwrap();
+    let sent: Vec<_> = (1..=10).map(|n| envelope("Step", n)).collect();
+
+    publisher.publish(&sent).await.unwrap();
+
+    let kept: Vec<String> = raw_entries(&stream)
+        .await
+        .ids
+        .iter()
+        .map(|e| e.get("event_id").unwrap())
+        .collect();
+    let newest: Vec<String> = sent[7..]
+        .iter()
+        .map(|e| e.record.meta.event_id.to_string())
+        .collect();
+    assert_eq!(kept, newest);
+}
+
+/// The checkpoint store is in-memory: a Redis checkpoint store is out of scope here.
+#[tokio::test]
+async fn subscription_runner_delivers_from_redis_and_checkpoints() {
+    let stream = unique_stream();
+    let publisher =
+        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let sent: Vec<_> = (1..=5).map(|n| envelope("Step", n)).collect();
+    publisher.publish(&sent).await.unwrap();
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let bus = InMemoryEventBus::new();
+    let sink = Arc::clone(&seen);
+    bus.subscribe_all(handler(move |e: EventEnvelope| {
+        let sink = Arc::clone(&sink);
+        async move {
+            sink.lock().unwrap().push(e.record.meta.event_id);
+            Ok(())
+        }
+    }));
+    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    let reader = Arc::new(RedisStreamReader::new(&redis_url(), stream.clone()).unwrap());
+    let mut config = SubscriptionConfig::new("redis-sub");
+    config.batch_size = NonZeroUsize::new(2).unwrap();
+
+    let mut runner = SubscriptionRunner::new(
+        Arc::clone(&reader),
+        Arc::clone(&checkpoints),
+        bus,
+        config.clone(),
+    );
+    let stats = runner.run_until_caught_up().await.unwrap();
+
+    let expected: Vec<_> = sent.iter().map(|e| e.record.meta.event_id).collect();
+    assert_eq!(*seen.lock().unwrap(), expected);
+    assert_eq!((stats.events_delivered, stats.batches), (5, 3));
+    let saved = checkpoints.load("redis-sub").await.unwrap().unwrap();
+    assert_eq!(saved.events_processed, 5);
+    assert_eq!(saved.last_event_id, expected.last().copied());
+    assert_eq!(saved.position, reader.current_position().await.unwrap());
+
+    // A new runner with the same checkpoint name resumes after the saved position.
+    let more: Vec<_> = (6..=7).map(|n| envelope("Step", n)).collect();
+    publisher.publish(&more).await.unwrap();
+    let again = Arc::new(Mutex::new(Vec::new()));
+    let bus = InMemoryEventBus::new();
+    let sink = Arc::clone(&again);
+    bus.subscribe_all(handler(move |e: EventEnvelope| {
+        let sink = Arc::clone(&sink);
+        async move {
+            sink.lock().unwrap().push(e.record.meta.event_id);
+            Ok(())
+        }
+    }));
+    let mut runner = SubscriptionRunner::new(reader, checkpoints, bus, config);
+    runner.run_until_caught_up().await.unwrap();
+    let expected_more: Vec<_> = more.iter().map(|e| e.record.meta.event_id).collect();
+    assert_eq!(*again.lock().unwrap(), expected_more);
+}

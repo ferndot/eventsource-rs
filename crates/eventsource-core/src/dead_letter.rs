@@ -166,5 +166,6 @@ pub(crate) fn describe_failure(error: &BusError) -> String {
             .map(|f| format!("subscription {}: {}", f.subscription.get(), f.error))
             .collect::<Vec<_>>()
             .join("; "),
+        BusError::Backend(source) => format!("bus backend failed: {source}"),
     }
 }
