@@ -52,6 +52,20 @@ CREATE TABLE IF NOT EXISTS snapshots (
     state          TEXT    NOT NULL,
     created_at     TEXT    NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dead_letters (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    subscription   TEXT    NOT NULL,
+    event_id       TEXT    NOT NULL,
+    stream_id      TEXT    NOT NULL,
+    stream_version INTEGER NOT NULL,
+    position_store TEXT    NOT NULL,
+    position_token INTEGER NOT NULL,
+    stored_at      TEXT    NOT NULL,
+    record         TEXT    NOT NULL,
+    error          TEXT    NOT NULL,
+    attempts       INTEGER NOT NULL,
+    UNIQUE (subscription, event_id)
+);
 ";
 
 /// Opens `path`, creating the file and schema if needed.
