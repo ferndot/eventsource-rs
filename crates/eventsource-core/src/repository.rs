@@ -401,7 +401,7 @@ where
             occurred_at,
             correlation_id: context.correlation_id,
             causation_id: context.causation_id,
-            tenant_id: context.tenant_id,
+            tenant_id: self.tenant.or(context.tenant_id),
             actor_id: context.actor_id.clone(),
         };
         aggregate

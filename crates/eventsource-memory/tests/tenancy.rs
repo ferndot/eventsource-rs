@@ -105,3 +105,30 @@ async fn a_repository_scoped_to_one_tenant_cannot_load_another_tenants_aggregate
     assert_eq!(as_a.stored_version(id).await.expect("version").get(), 0);
     assert_eq!(repo(&store, b).load(id).await.expect("b").state().sum, 7);
 }
+
+#[tokio::test]
+async fn events_written_through_a_scope_carry_the_tenant_and_it_survives_a_read_back() {
+    use eventsource_core::envelope::FeedReadOptions;
+    use eventsource_core::store::GlobalFeed;
+
+    let store: Store = Arc::new(InMemoryEventStore::new());
+    let tenant = TenantId::new();
+    let id = AggregateId::new();
+    // The command context names no tenant: the scope supplies it.
+    let ctx = CommandContext::new();
+    assert!(ctx.tenant_id.is_none());
+
+    let result = repo(&store, tenant)
+        .execute(id, Add(1), &ctx)
+        .await
+        .expect("write")
+        .expect("saved");
+    assert_eq!(result.envelopes[0].record.meta.tenant_id, Some(tenant));
+
+    let stored = store
+        .read_all(None, FeedReadOptions::default())
+        .await
+        .expect("feed");
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].record.meta.tenant_id, Some(tenant));
+}
