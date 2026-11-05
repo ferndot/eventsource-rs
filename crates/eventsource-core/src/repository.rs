@@ -156,7 +156,7 @@ where
         id: AggregateId,
     ) -> Result<Option<AggregateRoot<D>>, RepositoryError<D::Error>> {
         let stream = self.stream(id);
-        let (mut aggregate, loaded) = match self.read_snapshot(id, &stream).await? {
+        let (mut aggregate, loaded) = match self.read_snapshot(id, &stream).await {
             Some(aggregate) => {
                 let version = aggregate.committed_version();
                 (aggregate, version)
@@ -197,33 +197,15 @@ where
         Ok(Some(aggregate))
     }
 
-    /// The aggregate as of the stored snapshot, or `None` if there is none.
-    async fn read_snapshot(
-        &self,
-        id: AggregateId,
-        stream: &StreamId,
-    ) -> Result<Option<AggregateRoot<D>>, RepositoryError<D::Error>> {
-        let Some(config) = &self.snapshots else {
-            return Ok(None);
-        };
-        let loaded = config
-            .store
-            .load(stream)
-            .await
-            .map_err(|e| StoreError::Backend(Box::new(e)))?;
-        let Some(snapshot) = loaded else {
-            return Ok(None);
-        };
-        let state =
-            (config.decode)(snapshot.state).map_err(|e| RepositoryError::CorruptStream {
-                stream: stream.clone(),
-                detail: format!("snapshot state: {e}"),
-            })?;
-        Ok(Some(AggregateRoot::from_snapshot(
-            id,
-            snapshot.version,
-            state,
-        )))
+    /// The aggregate as of the stored snapshot, or `None` to replay from the start.
+    ///
+    /// Every way a snapshot can be unusable (absent, unreadable, undecodable)
+    /// is the same answer: the events are the truth, so replay them.
+    async fn read_snapshot(&self, id: AggregateId, stream: &StreamId) -> Option<AggregateRoot<D>> {
+        let config = self.snapshots.as_ref()?;
+        let snapshot = config.store.load(stream).await.ok()??;
+        let state = (config.decode)(snapshot.state).ok()?;
+        Some(AggregateRoot::from_snapshot(id, snapshot.version, state))
     }
 
     /// Loads an aggregate, or a new empty one if none exists.

@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use eventsource_core::error::SnapshotError;
 use eventsource_core::event::{EventMeta, EventRecord};
 use eventsource_core::snapshot::{Snapshot, SnapshotPolicy, SnapshotStore};
 use eventsource_core::store::AggregateStore;
@@ -193,4 +194,53 @@ async fn save_writes_a_snapshot_at_a_policy_boundary_and_not_elsewhere() {
     let at_seven = stored().await.expect("snapshot after stepping over 6");
     assert_eq!(at_seven.version, Version::new(7));
     assert_eq!(at_seven.state, json!({ "sum": 7 }));
+}
+
+#[tokio::test]
+async fn corrupt_snapshot_payload_falls_back_to_full_replay() {
+    let events: Events = Arc::new(InMemoryEventStore::new());
+    let snapshots: Snapshots = Arc::new(InMemorySnapshotStore::new());
+    let id = AggregateId::new();
+    append_good(&events, id, &[1, 2, 3, 4, 5], 0).await;
+    // A snapshot at the right version and schema, whose state is not a CounterState.
+    snapshots
+        .save(snapshot(id, 3, 1, json!({ "sum": "banana" })))
+        .await
+        .expect("save corrupt snapshot");
+
+    let aggregate = snapshot_repo(&events, &snapshots, 100)
+        .load(id)
+        .await
+        .expect("a corrupt snapshot is not fatal");
+    assert_eq!(aggregate.state(), &CounterState { sum: 15 });
+    assert_eq!(aggregate.version(), Version::new(5));
+}
+
+/// A snapshot store whose reads fail the way a damaged row would.
+struct UnreadableSnapshots;
+
+impl SnapshotStore for UnreadableSnapshots {
+    async fn save(&self, _: Snapshot) -> Result<(), SnapshotError> {
+        Ok(())
+    }
+
+    async fn load(&self, _: &StreamId) -> Result<Option<Snapshot>, SnapshotError> {
+        Err(SnapshotError::Corrupt("bad row".to_owned()))
+    }
+}
+
+#[tokio::test]
+async fn unreadable_snapshot_store_falls_back_to_full_replay() {
+    let events: Events = Arc::new(InMemoryEventStore::new());
+    let id = AggregateId::new();
+    append_good(&events, id, &[2, 2, 2], 0).await;
+
+    let repo = AggregateRepository::<Counter, Events>::new(Arc::clone(&events))
+        .expect("repository")
+        .with_snapshots(
+            UnreadableSnapshots,
+            SnapshotPolicy::every_n_events(2).expect("policy"),
+        );
+    let aggregate = repo.load(id).await.expect("a snapshot read error is not fatal");
+    assert_eq!(aggregate.state(), &CounterState { sum: 6 });
 }
