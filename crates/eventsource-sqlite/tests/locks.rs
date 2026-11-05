@@ -140,3 +140,42 @@ async fn a_lock_held_before_reopen_is_still_held_after() {
         "and it still expires"
     );
 }
+
+#[test]
+fn two_handles_racing_for_a_free_lock_produce_exactly_one_winner() {
+    use std::sync::Barrier;
+
+    use futures::executor::block_on;
+
+    const ROUNDS: usize = 100;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("locks.db");
+    let clock = Arc::new(ManualClock::default());
+    let first = SqliteLockStore::open(&path, Arc::clone(&clock)).expect("open first");
+    let second = SqliteLockStore::open(&path, Arc::clone(&clock)).expect("open second");
+
+    for round in 0..ROUNDS {
+        let lock_name = name(&format!("relay-{round}"));
+        let barrier = Barrier::new(2);
+        let race = |store: &SqliteLockStore<Arc<ManualClock>>, who: &str| {
+            let who = owner(who);
+            barrier.wait();
+            block_on(store.try_acquire(&lock_name, &who, ttl(30)))
+        };
+        let (a, b) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| race(&first, "a"));
+            let b = scope.spawn(|| race(&second, "b"));
+            (a.join().expect("thread a"), b.join().expect("thread b"))
+        });
+        let results = [a, b];
+        assert!(
+            results.iter().all(Result::is_ok),
+            "round {round}: a refusal is a value, never an error: {results:?}"
+        );
+        let wins = results
+            .iter()
+            .filter(|r| matches!(r, Ok(Some(_))))
+            .count();
+        assert_eq!(wins, 1, "round {round}: exactly one winner: {results:?}");
+    }
+}
