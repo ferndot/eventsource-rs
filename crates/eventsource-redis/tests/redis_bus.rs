@@ -9,7 +9,10 @@ use eventsource_core::ids::{AggregateId, CorrelationId};
 use eventsource_core::position::Position;
 use eventsource_core::stream_id::{Category, StreamId};
 use eventsource_core::version::Version;
-use eventsource_redis::{RedisBusConfig, RedisPublisher};
+use eventsource_core::envelope::FeedReadOptions;
+use eventsource_core::error::StoreError;
+use eventsource_core::store::GlobalFeed;
+use eventsource_redis::{RedisBusConfig, RedisPublisher, RedisStreamReader};
 use redis::AsyncCommands;
 use redis::streams::StreamRangeReply;
 use serde_json::json;
@@ -81,4 +84,55 @@ async fn publish_preserves_order_across_batches() {
         .map(|e| e.get("event_id").unwrap())
         .collect();
     assert_eq!(actual, expected);
+}
+
+#[tokio::test]
+async fn reader_decodes_entries_back_into_envelopes() {
+    let stream = unique_stream();
+    let publisher =
+        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let reader = RedisStreamReader::new(&redis_url(), stream.clone()).unwrap();
+    let sent: Vec<_> = (1..=3).map(|n| envelope("Step", n)).collect();
+    publisher.publish(&sent).await.unwrap();
+
+    let got = reader
+        .read_all(None, FeedReadOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(got.len(), 3);
+    for (sent, got) in sent.iter().zip(&got) {
+        assert_eq!(got.record, sent.record);
+        assert_eq!(got.stream, sent.stream);
+        assert_eq!(got.stream_version, sent.stream_version);
+        assert_eq!(got.stored_at, sent.stored_at);
+    }
+    // Positions are the reader's own, so they can be checkpointed, and they ascend.
+    assert_ne!(got[0].position, sent[0].position);
+    assert_eq!(
+        got[0].position.try_cmp(&got[1].position),
+        Ok(std::cmp::Ordering::Less)
+    );
+    let current = reader.current_position().await.unwrap();
+    assert_eq!(current.as_ref(), Some(&got[2].position));
+}
+
+#[tokio::test]
+async fn reader_reports_malformed_entry_as_error() {
+    let stream = unique_stream();
+    let client = redis::Client::open(redis_url()).unwrap();
+    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+    let _: String = conn
+        .xadd(&stream, "*", &[("envelope", "{not json")])
+        .await
+        .unwrap();
+    let _: String = conn
+        .xadd(&stream, "*", &[("unrelated", "x")])
+        .await
+        .unwrap();
+    let reader = RedisStreamReader::new(&redis_url(), stream).unwrap();
+
+    let result = reader.read_all(None, FeedReadOptions::default()).await;
+
+    assert!(matches!(result, Err(StoreError::Backend(_))));
 }
