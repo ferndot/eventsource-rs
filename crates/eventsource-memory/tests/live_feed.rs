@@ -1,6 +1,8 @@
 //! Live tail of the in-memory store's global feed.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use eventsource_core::event::{EventMeta, EventRecord};
@@ -8,8 +10,11 @@ use eventsource_core::store::AggregateStore;
 use eventsource_core::{AggregateId, Category, CorrelationId, ExpectedVersion, LiveFeed, StreamId};
 use eventsource_memory::InMemoryEventStore;
 use futures::StreamExt;
+use futures::task::ArcWake;
 
 const IDLE: Duration = Duration::from_millis(50);
+/// Runtime yields given to a stream to misbehave; a spinning one wakes on every poll.
+const YIELDS: usize = 1_000;
 const WAIT: Duration = Duration::from_secs(5);
 
 fn record(n: u64) -> EventRecord {
@@ -106,12 +111,50 @@ async fn an_idle_live_stream_stays_pending_after_catching_up() {
         .await
         .expect("event arrives");
 
-    // Caught up: neither ends nor yields, and does not spin.
-    let mut polls = 0_u32;
-    let idle = std::future::poll_fn(|cx| {
-        polls += 1;
-        live.poll_next_unpin(cx).map(|_| ())
-    });
-    assert!(tokio::time::timeout(IDLE, idle).await.is_err());
-    assert!(polls <= 3, "idle stream was polled {polls} times");
+    // Caught up: the stream is pending and does not spin.
+    //
+    // This is deliberately not timing-based. The stream is polled by hand with a
+    // waker that counts wake-ups. A stream that busy-loops asks to be re-polled
+    // from inside its own poll (a self-wake), which shows up in the count whatever
+    // the scheduler does. We then yield to the runtime many times, giving anything
+    // that would wake later plenty of chances to do so, and require zero wake-ups.
+    let wakes = Arc::new(WakeCount::default());
+    let waker = futures::task::waker(Arc::clone(&wakes));
+    let mut cx = Context::from_waker(&waker);
+    assert!(live.poll_next_unpin(&mut cx).is_pending());
+    for _ in 0..YIELDS {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        wakes.count(),
+        0,
+        "an idle live stream asked to be polled again"
+    );
+
+    // It is idle, not dead: an append wakes it and the event comes through.
+    append(&store, 1).await;
+    for _ in 0..YIELDS {
+        tokio::task::yield_now().await;
+    }
+    assert!(wakes.count() >= 1, "an append must wake the idle stream");
+    let Poll::Ready(Some(event)) = live.poll_next_unpin(&mut cx) else {
+        panic!("the appended event should be ready after the wake-up");
+    };
+    assert_eq!(event.position.token(), 2);
+}
+
+/// Counts how often a task asks to be polled again.
+#[derive(Default)]
+struct WakeCount(AtomicUsize);
+
+impl WakeCount {
+    fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+impl ArcWake for WakeCount {
+    fn wake_by_ref(this: &Arc<Self>) {
+        this.0.fetch_add(1, Ordering::SeqCst);
+    }
 }
