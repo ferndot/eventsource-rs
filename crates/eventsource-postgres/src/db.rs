@@ -51,6 +51,16 @@ CREATE TABLE IF NOT EXISTS locks (
     owner      TEXT   NOT NULL,
     expires_at BIGINT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS outbox (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    destination TEXT   NOT NULL,
+    payload     TEXT   NOT NULL,
+    stream_id   TEXT,
+    status      TEXT   NOT NULL DEFAULT 'pending',
+    attempts    BIGINT NOT NULL DEFAULT 0,
+    last_error  TEXT
+);
+CREATE INDEX IF NOT EXISTS outbox_pending ON outbox (status, id);
 CREATE TABLE IF NOT EXISTS dead_letters (
     id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     subscription   TEXT   NOT NULL,

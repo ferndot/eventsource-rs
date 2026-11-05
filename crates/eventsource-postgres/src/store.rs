@@ -197,6 +197,11 @@ impl PostgresEventStore {
                 record,
             });
         }
+        // Same transaction as the events: if a message is rejected, dropping
+        // `tx` rolls the events back.
+        for message in messages {
+            crate::outbox::insert(&tx, message).await?;
+        }
         tx.commit().await.map_err(PostgresError::from)?;
 
         Ok(AppendResult {
