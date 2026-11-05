@@ -1,7 +1,7 @@
 //! Tracking of fire-and-forget delivery tasks, independent of what they deliver.
 
 use std::future::Future;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use eventsource_core::bus::HandlerFailure;
 use eventsource_core::error::BusError;
@@ -15,12 +15,13 @@ pub(crate) struct BackgroundDelivery {
 }
 
 impl BackgroundDelivery {
-    /// Spawns `delivery`, recording handler failures it returns. Needs a Tokio runtime.
-    pub(crate) fn spawn<F>(self: &std::sync::Arc<Self>, delivery: F)
+    /// Spawns `delivery` as a tracked task, recording the handler failures it
+    /// returns. Needs a Tokio runtime.
+    pub(crate) fn spawn<F>(self: &Arc<Self>, delivery: F)
     where
         F: Future<Output = Result<(), BusError>> + Send + 'static,
     {
-        let this = std::sync::Arc::clone(self);
+        let this = Arc::clone(self);
         let handle = tokio::spawn(async move {
             if let Err(BusError::HandlerFailures(mut failed)) = delivery.await {
                 lock(&this.failures).append(&mut failed);
@@ -35,12 +36,12 @@ impl BackgroundDelivery {
     pub(crate) async fn flush(&self) {
         let tasks = std::mem::take(&mut *lock(&self.tasks));
         for task in tasks {
-            // Panics are caught inside deliveries, so a join error means cancellation only.
+            // Deliveries isolate handler panics themselves, so a join error means cancellation.
             let _ = task.await;
         }
     }
 
-    /// Takes the recorded failures.
+    /// Takes the recorded failures, leaving none behind.
     pub(crate) fn take_failures(&self) -> Vec<HandlerFailure> {
         std::mem::take(&mut *lock(&self.failures))
     }

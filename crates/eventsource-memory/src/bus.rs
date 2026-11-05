@@ -111,15 +111,8 @@ impl InMemoryEventBus {
 }
 
 impl InMemoryEventBus {
-    /// Opt-in background delivery, the counterpart of `publish(events, background=True)`
-    /// in the reference implementation. Inline [`EventPublisher::publish`] stays the default.
-    ///
-    /// Spawns a tracked task that delivers `envelopes` and returns at once, so
-    /// the caller never waits on handlers. Panics and errors are isolated as in
-    /// inline delivery; the resulting failures are kept and can be taken with
-    /// [`Self::take_background_failures`]. Use [`Self::flush`] to wait for
-    /// delivery. Separate calls may run concurrently, so order across calls is
-    /// not guaranteed; within one call it is.
+    /// Opt-in background delivery: spawns a task that delivers `envelopes` and
+    /// returns at once. Inline [`EventPublisher::publish`] stays the default.
     ///
     /// Must be called inside a Tokio runtime.
     pub fn publish_background(self: &Arc<Self>, envelopes: Vec<EventEnvelope>) {
@@ -133,7 +126,7 @@ impl InMemoryEventBus {
         self.background.flush().await;
     }
 
-    /// Takes the failures recorded by background deliveries, leaving none behind.
+    /// Takes the failures recorded by background deliveries.
     #[must_use]
     pub fn take_background_failures(&self) -> Vec<HandlerFailure> {
         self.background.take_failures()

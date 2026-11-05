@@ -265,57 +265,59 @@ impl GlobalFeed for InMemoryEventStore {
 }
 
 /// Max events read from the feed per wake-up while tailing.
-const LIVE_PAGE: NonZeroUsize = match NonZeroUsize::new(256) {
-    Some(size) => size,
-    None => NonZeroUsize::MIN,
-};
+const LIVE_PAGE: NonZeroUsize = NonZeroUsize::MIN.saturating_add(255);
 
-struct LiveState {
+/// Cursor state of one live stream.
+struct LiveTail {
     store: Arc<InMemoryEventStore>,
     wake: watch::Receiver<u64>,
-    cursor: Option<Position>,
+    after: Option<Position>,
     buffered: VecDeque<EventEnvelope>,
 }
 
+impl LiveTail {
+    /// The next event after the cursor, waiting for appends. `None` ends the stream.
+    async fn next(&mut self) -> Option<EventEnvelope> {
+        loop {
+            if let Some(next) = self.buffered.pop_front() {
+                self.after = Some(next.position.clone());
+                return Some(next);
+            }
+            let options = FeedReadOptions {
+                limit: Some(LIVE_PAGE),
+                ..FeedReadOptions::default()
+            };
+            let page = self
+                .store
+                .read_all(self.after.as_ref(), options)
+                .await
+                .ok()?;
+            if page.is_empty() {
+                // Errs only if the sender is gone, which cannot happen while we hold the store.
+                self.wake.changed().await.ok()?;
+            } else {
+                self.buffered.extend(page);
+            }
+        }
+    }
+}
+
 impl LiveFeed for InMemoryEventStore {
-    /// Tails the feed from its current head. Wakes on the store's append signal.
+    /// Tails the feed from its current head, waking on the store's append signal.
     fn subscribe_live(self: Arc<Self>) -> BoxStream<'static, EventEnvelope> {
         // Subscribe to wake-ups before reading the head, so an append between
-        // the two is seen as a change rather than missed.
+        // the two shows up as a change instead of being missed.
         let wake = self.wake();
-        let cursor = self
-            .lock()
-            .events
-            .last()
-            .map(|envelope| envelope.position.clone());
-        let state = LiveState {
-            store: Arc::clone(&self),
+        let after = self.lock().events.last().map(|e| e.position.clone());
+        let tail = LiveTail {
+            store: self,
             wake,
-            cursor,
+            after,
             buffered: VecDeque::new(),
         };
-        Box::pin(stream::unfold(state, |mut state| async move {
-            loop {
-                if let Some(next) = state.buffered.pop_front() {
-                    state.cursor = Some(next.position.clone());
-                    return Some((next, state));
-                }
-                let options = FeedReadOptions {
-                    limit: Some(LIVE_PAGE),
-                    ..FeedReadOptions::default()
-                };
-                let page = state
-                    .store
-                    .read_all(state.cursor.as_ref(), options)
-                    .await
-                    .ok()?;
-                if page.is_empty() {
-                    // The store owns the sender and we hold the store, so this only errs on teardown.
-                    state.wake.changed().await.ok()?;
-                } else {
-                    state.buffered.extend(page);
-                }
-            }
+        Box::pin(stream::unfold(tail, |mut tail| async move {
+            let next = tail.next().await?;
+            Some((next, tail))
         }))
     }
 }
