@@ -13,7 +13,6 @@ pub mod envelope;
 pub mod error;
 pub mod event;
 pub mod ids;
-pub mod live;
 pub mod position;
 pub mod registry;
 pub mod repository;
@@ -35,7 +34,6 @@ pub use error::{
 };
 pub use event::{DomainEvent, EventMeta, EventRecord};
 pub use ids::{AggregateId, CausationId, CorrelationId, EventId, TenantId};
-pub use live::LiveFeed;
 pub use position::Position;
 pub use registry::EventRegistry;
 pub use repository::{AggregateRepository, CommandContext};

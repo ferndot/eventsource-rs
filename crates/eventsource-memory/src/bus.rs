@@ -3,14 +3,12 @@
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{PoisonError, RwLock};
 
 use eventsource_core::bus::{EventPublisher, Handler, HandlerFailure, SubscriptionId};
 use eventsource_core::envelope::EventEnvelope;
 use eventsource_core::error::BusError;
 use futures::FutureExt;
-
-use crate::background::BackgroundDelivery;
 
 /// Turns a caught panic payload into a readable message.
 fn panic_message(panic: &(dyn Any + Send)) -> String {
@@ -46,7 +44,6 @@ struct Subscription {
 pub struct InMemoryEventBus {
     next_id: AtomicU64,
     subscriptions: RwLock<Vec<Subscription>>,
-    background: Arc<BackgroundDelivery>,
 }
 
 impl InMemoryEventBus {
@@ -110,45 +107,8 @@ impl InMemoryEventBus {
     }
 }
 
-impl InMemoryEventBus {
-    /// Opt-in background delivery, the counterpart of `publish(events, background=True)`
-    /// in the reference implementation. Inline [`EventPublisher::publish`] stays the default.
-    ///
-    /// Spawns a tracked task that delivers `envelopes` and returns at once, so
-    /// the caller never waits on handlers. Panics and errors are isolated as in
-    /// inline delivery; the resulting failures are kept and can be taken with
-    /// [`Self::take_background_failures`]. Use [`Self::flush`] to wait for
-    /// delivery. Separate calls may run concurrently, so order across calls is
-    /// not guaranteed; within one call it is.
-    ///
-    /// Must be called inside a Tokio runtime.
-    pub fn publish_background(self: &Arc<Self>, envelopes: Vec<EventEnvelope>) {
-        let bus = Arc::clone(self);
-        self.background
-            .spawn(async move { bus.deliver(&envelopes).await });
-    }
-
-    /// Waits until every background delivery started so far has finished.
-    pub async fn flush(&self) {
-        self.background.flush().await;
-    }
-
-    /// Takes the failures recorded by background deliveries, leaving none behind.
-    #[must_use]
-    pub fn take_background_failures(&self) -> Vec<HandlerFailure> {
-        self.background.take_failures()
-    }
-}
-
 impl EventPublisher for InMemoryEventBus {
     async fn publish(&self, envelopes: &[EventEnvelope]) -> Result<(), BusError> {
-        self.deliver(envelopes).await
-    }
-}
-
-impl InMemoryEventBus {
-    /// Runs every handler for every envelope, isolating panics and errors.
-    async fn deliver(&self, envelopes: &[EventEnvelope]) -> Result<(), BusError> {
         let mut failures = Vec::new();
         for envelope in envelopes {
             for (subscription, handler) in self.handlers_for(&envelope.record.event_type) {
