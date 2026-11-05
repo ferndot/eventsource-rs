@@ -5,3 +5,7 @@
 //! on. The toolkit depends on the memory adapter, so it cannot live there.
 
 mod builder;
+mod recording;
+
+pub use builder::EventBuilder;
+pub use recording::RecordingEventBus;

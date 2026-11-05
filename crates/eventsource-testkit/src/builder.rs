@@ -2,7 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use eventsource_core::{
-    CausationId, CorrelationId, DomainEvent, EventId, EventMeta, EventRecord, TenantId,
+    CausationId, CorrelationId, DomainEvent, EventEnvelope, EventId, EventMeta, EventRecord,
+    Position, StreamId, TenantId, Version,
 };
 use serde_json::Value;
 
@@ -120,6 +121,21 @@ impl EventBuilder {
         let mut record = EventRecord::new(meta, self.event_type.clone(), self.payload.clone());
         record.schema_version = self.schema_version;
         record
+    }
+
+    /// Builds a record and wraps it as if stored at `version` of `stream`.
+    ///
+    /// The global position token equals `version`, which is enough for
+    /// envelopes handed straight to a publisher.
+    #[must_use]
+    pub fn build_envelope(&self, stream: &StreamId, version: u64) -> EventEnvelope {
+        EventEnvelope {
+            record: self.build(),
+            stream: stream.clone(),
+            stream_version: Version::new(version),
+            position: Position::new("testkit", version),
+            stored_at: Utc::now(),
+        }
     }
 }
 
