@@ -11,6 +11,7 @@ use eventsource_core::lock::LockError;
 
 /// What went wrong inside the `PostgreSQL` adapters.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PostgresError {
     /// `PostgreSQL` reported a failure (I/O, constraint, ...).
     #[error("postgres failure")]

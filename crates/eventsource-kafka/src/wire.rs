@@ -46,6 +46,7 @@ pub(crate) fn encode(envelope: &EventEnvelope) -> Vec<u8> {
 
 /// Why a record could not be turned into an envelope.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DecodeRecordError {
     /// The record has no value (a tombstone).
     #[error("record at partition {partition} offset {offset} has no value")]

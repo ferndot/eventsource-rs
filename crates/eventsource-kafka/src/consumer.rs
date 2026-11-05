@@ -43,6 +43,7 @@ pub struct Delivery {
 
 /// Why a poll failed.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConsumeError {
     /// Kafka reported an error.
     #[error("kafka consumer failed")]

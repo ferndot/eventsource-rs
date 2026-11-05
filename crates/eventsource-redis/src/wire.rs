@@ -44,6 +44,7 @@ pub(crate) fn encode(envelope: &EventEnvelope) -> Vec<(&'static str, String)> {
 
 /// Why a stream entry could not be turned into an envelope.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DecodeEntryError {
     /// The entry has no `envelope` field.
     #[error("entry {id} has no envelope field")]
