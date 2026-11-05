@@ -1,9 +1,10 @@
 //! In-process event store. Non-persistent; suitable for tests and single-process use.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use futures::stream::{self, BoxStream};
 use tokio::sync::watch;
 
 use eventsource_core::Category;
@@ -13,6 +14,7 @@ use eventsource_core::envelope::{
 use eventsource_core::error::{PositionError, StoreError};
 use eventsource_core::event::EventRecord;
 use eventsource_core::ids::EventId;
+use eventsource_core::live::LiveFeed;
 use eventsource_core::store::{AggregateStore, GlobalFeed};
 use eventsource_core::version::ExpectedVersion;
 use eventsource_core::{Clock, EventRegistry, Position, StreamId, SystemClock, Version};
@@ -259,5 +261,61 @@ impl GlobalFeed for InMemoryEventStore {
             .events
             .last()
             .map(|envelope| envelope.position.clone()))
+    }
+}
+
+/// Max events read from the feed per wake-up while tailing.
+const LIVE_PAGE: NonZeroUsize = match NonZeroUsize::new(256) {
+    Some(size) => size,
+    None => NonZeroUsize::MIN,
+};
+
+struct LiveState {
+    store: Arc<InMemoryEventStore>,
+    wake: watch::Receiver<u64>,
+    cursor: Option<Position>,
+    buffered: VecDeque<EventEnvelope>,
+}
+
+impl LiveFeed for InMemoryEventStore {
+    /// Tails the feed from its current head. Wakes on the store's append signal.
+    fn subscribe_live(self: Arc<Self>) -> BoxStream<'static, EventEnvelope> {
+        // Subscribe to wake-ups before reading the head, so an append between
+        // the two is seen as a change rather than missed.
+        let wake = self.wake();
+        let cursor = self
+            .lock()
+            .events
+            .last()
+            .map(|envelope| envelope.position.clone());
+        let state = LiveState {
+            store: Arc::clone(&self),
+            wake,
+            cursor,
+            buffered: VecDeque::new(),
+        };
+        Box::pin(stream::unfold(state, |mut state| async move {
+            loop {
+                if let Some(next) = state.buffered.pop_front() {
+                    state.cursor = Some(next.position.clone());
+                    return Some((next, state));
+                }
+                let options = FeedReadOptions {
+                    limit: Some(LIVE_PAGE),
+                    ..FeedReadOptions::default()
+                };
+                let page = state
+                    .store
+                    .read_all(state.cursor.as_ref(), options)
+                    .await
+                    .ok()?;
+                if page.is_empty() {
+                    // The store owns the sender and we hold the store, so this only errs on teardown.
+                    state.wake.changed().await.ok()?;
+                } else {
+                    state.buffered.extend(page);
+                }
+            }
+        }))
     }
 }

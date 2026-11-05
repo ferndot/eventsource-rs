@@ -1,4 +1,3 @@
-#![allow(clippy::unused_async_trait_impl)] // Trait methods return impl Future; async fn is the natural impl form.
 //! Publishing ports and handler types for the event bus.
 
 use std::future::Future;
