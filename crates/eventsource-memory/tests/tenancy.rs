@@ -132,3 +132,34 @@ async fn events_written_through_a_scope_carry_the_tenant_and_it_survives_a_read_
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].record.meta.tenant_id, Some(tenant));
 }
+
+#[tokio::test]
+async fn a_feed_read_filtered_by_tenant_returns_only_that_tenants_events_in_position_order() {
+    use eventsource_core::envelope::FeedReadOptions;
+    use eventsource_core::store::GlobalFeed;
+
+    let store: Store = Arc::new(InMemoryEventStore::new());
+    let (a, b) = (TenantId::new(), TenantId::new());
+    let shared = AggregateId::new();
+    let ctx = CommandContext::new();
+
+    repo(&store, a).execute(shared, Add(1), &ctx).await.expect("a1");
+    repo(&store, b).execute(shared, Add(100), &ctx).await.expect("b1");
+    repo(&store, a).execute(shared, Add(2), &ctx).await.expect("a2");
+    let unscoped: AggregateRepository<Counter, Store> =
+        AggregateRepository::new(Arc::clone(&store)).expect("repo");
+    unscoped.execute(shared, Add(1000), &ctx).await.expect("none");
+    repo(&store, a).execute(AggregateId::new(), Add(3), &ctx).await.expect("a3");
+
+    let options = FeedReadOptions {
+        tenant_id: Some(a),
+        ..FeedReadOptions::default()
+    };
+    let feed = store.read_all(None, options).await.expect("feed");
+
+    let payloads: Vec<_> = feed.iter().map(|e| e.record.payload.clone()).collect();
+    assert_eq!(payloads.len(), 3);
+    assert!(feed.iter().all(|e| e.record.meta.tenant_id == Some(a)));
+    let tokens: Vec<u64> = feed.iter().map(|e| e.position.token()).collect();
+    assert_eq!(tokens, vec![1, 3, 5], "only tenant a's events, oldest first");
+}
