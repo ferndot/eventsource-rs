@@ -5,7 +5,7 @@ mod common;
 use std::future::Future;
 use std::sync::Arc;
 
-use eventsource_core::error::BackendError;
+use eventsource_core::error::{BackendError, ReadModelError};
 use eventsource_core::event::{EventMeta, EventRecord};
 use eventsource_core::projection::{ProjectionSink, Projector, ReadModelChange, ReadView};
 use eventsource_core::readmodel::ReadModelStore;
@@ -15,7 +15,9 @@ use eventsource_core::{
     SubscriptionConfig, SubscriptionRunner,
 };
 use eventsource_memory::{InMemoryCheckpointStore, InMemoryEventStore, InMemoryReadModelStore};
-use eventsource_postgres::{PostgresCheckpointStore, PostgresEventStore, PostgresReadModelStore};
+use eventsource_postgres::{
+    PostgresCheckpointStore, PostgresError, PostgresEventStore, PostgresReadModelStore,
+};
 use serde_json::{Value, json};
 
 const MODEL: &str = "order_summaries";
@@ -84,7 +86,18 @@ async fn a_failing_change_rolls_back_the_whole_batch() {
             ReadModelChange::upsert("orders", "bad", json!(2)),
         ])
         .await;
-    assert!(result.is_err());
+    // The failure is the database's own rejection, surfaced as a backend error.
+    let Err(ReadModelError::Backend(source)) = result else {
+        panic!("expected a backend error, got {result:?}");
+    };
+    let Some(PostgresError::Postgres(cause)) = source.downcast_ref::<PostgresError>() else {
+        panic!("expected a postgres failure, got {source:?}");
+    };
+    assert_eq!(
+        cause.as_db_error().map(tokio_postgres::error::DbError::message),
+        Some("rejected"),
+        "the trigger's message must reach the caller: {cause:?}"
+    );
     assert_eq!(
         store.get("orders", "good").await.expect("get"),
         None,
