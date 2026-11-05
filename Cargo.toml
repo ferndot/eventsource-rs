@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/eventsource-core",
     "crates/eventsource-memory",
+    "crates/eventsource-sqlite",
     "crates/eventsource-testing",
 ]
 
@@ -14,6 +15,8 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
+rusqlite = { version = "0.37", features = ["bundled"] }
+tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

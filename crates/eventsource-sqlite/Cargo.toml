@@ -1,0 +1,25 @@
+[package]
+name = "eventsource-sqlite"
+description = "SQLite-backed event store and checkpoint store for eventsource-core."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+eventsource-core = { path = "../eventsource-core" }
+chrono.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+eventsource-testing = { path = "../eventsource-testing" }
+futures.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
