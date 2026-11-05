@@ -50,6 +50,9 @@ pub enum ManagerError {
         /// Its status when the call was refused.
         status: SubscriptionStatus,
     },
+    /// [`SubscriptionManager::shutdown`] was called; no more subscriptions are accepted.
+    #[error("the manager is shutting down")]
+    ShuttingDown,
     /// The [`ManagerDriver`] was dropped, so no subscription can make progress.
     #[error("the manager driver is gone")]
     DriverGone,
@@ -60,6 +63,7 @@ pub enum ManagerError {
 enum Control {
     Run,
     Pause,
+    Shutdown,
 }
 
 type RunFuture = BoxFuture<'static, Result<RunStats, SubscriptionError>>;
@@ -72,7 +76,7 @@ struct Entry {
 
 struct Inner {
     entries: Mutex<HashMap<String, Entry>>,
-    tasks: mpsc::UnboundedSender<BoxFuture<'static, ()>>,
+    tasks: Mutex<Option<mpsc::UnboundedSender<BoxFuture<'static, ()>>>>,
 }
 
 /// Handle to a set of named subscription runners. Clones share the same set.
@@ -93,7 +97,7 @@ impl SubscriptionManager {
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = Inner {
             entries: Mutex::new(HashMap::new()),
-            tasks: tx,
+            tasks: Mutex::new(Some(tx)),
         };
         (
             Self {
@@ -134,13 +138,53 @@ impl SubscriptionManager {
             return Err(ManagerError::AlreadyRegistered(name));
         }
         let factory: Factory = Box::new(move |stop| Box::pin(build().run(stop)));
+        let tasks = self
+            .inner
+            .tasks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(tasks) = tasks.as_ref() else {
+            return Err(ManagerError::ShuttingDown);
+        };
         let status = Arc::new(watch::channel(SubscriptionStatus::Running).0);
         let (control, control_rx) = watch::channel(Control::Run);
         let task = drive(factory, control_rx, Arc::clone(&status));
         entries.insert(name, Entry { status, control });
         // A dropped driver means nothing will ever run; the status stays as registered.
-        let _ = self.inner.tasks.send(Box::pin(task));
+        let _ = tasks.send(Box::pin(task));
         Ok(())
+    }
+
+    /// Stops every subscription after its current page and waits for all of them.
+    ///
+    /// Each runner finishes the page it is delivering, saves that page's
+    /// checkpoint and stops; nothing is cancelled mid-event. When this returns
+    /// every status is [`SubscriptionStatus::Stopped`] (or `Failed`), the
+    /// driver is about to return, and no new subscriptions are accepted.
+    /// The driver must be running, or this waits for it.
+    pub async fn shutdown(&self) {
+        let controls: Vec<_> = {
+            let entries = self
+                .inner
+                .entries
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            // Closing the intake ends the driver once the running futures finish.
+            self.inner
+                .tasks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            entries
+                .values()
+                .map(|entry| {
+                    entry.control.send_replace(Control::Shutdown);
+                    entry.control.clone()
+                })
+                .collect()
+        };
+        // A control sender reports `closed` once its subscription's future has finished.
+        future::join_all(controls.iter().map(watch::Sender::closed)).await;
     }
 
     /// The current status of `name`.
@@ -288,6 +332,10 @@ async fn drive(
                 if *control.borrow() == Control::Run {
                     return;
                 }
+            }
+            Control::Shutdown => {
+                status.send_replace(SubscriptionStatus::Stopped);
+                return;
             }
             Control::Pause => {
                 status.send_replace(SubscriptionStatus::Paused);
@@ -528,5 +576,51 @@ mod tests {
         assert_eq!(resumed.position, Some(Position::new("fake", 6)));
         assert_eq!(resumed.events_processed, 6);
         driver.abort();
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_the_current_page_and_checkpoints_the_last_delivered_event() {
+        let (manager, driver) = SubscriptionManager::new();
+        let driver = tokio::spawn(driver.run());
+        let feed = Feed::default();
+        feed.append(4);
+        let checkpoints = Checkpoints::default();
+        let slow = || Sink {
+            page_delay: Duration::from_millis(150),
+            ..Sink::default()
+        };
+        let (sink_a, sink_b) = (slow(), slow());
+        register(&manager, "alpha", &feed, &checkpoints, &sink_a);
+        register(&manager, "beta", &feed, &checkpoints, &sink_b);
+        sink_a.entered.notified().await;
+        sink_b.entered.notified().await;
+        // Both runners are now inside their first page (events 1 and 2).
+
+        manager.shutdown().await;
+
+        for (name, sink) in [("alpha", &sink_a), ("beta", &sink_b)] {
+            assert_eq!(
+                sink.tokens(),
+                [1, 2],
+                "{name}: current page finished, next not started"
+            );
+            let saved = checkpoints.get(name).unwrap();
+            assert_eq!(saved.position, Some(Position::new("fake", 2)), "{name}");
+            assert_eq!(saved.events_processed, 2, "{name}");
+            assert_eq!(manager.status(name), Ok(SubscriptionStatus::Stopped));
+        }
+        tokio::time::timeout(Duration::from_secs(1), driver)
+            .await
+            .expect("driver ends after shutdown")
+            .unwrap();
+        let late = manager.register("gamma", || {
+            SubscriptionRunner::new(
+                Feed::default(),
+                Checkpoints::default(),
+                Sink::default(),
+                config("gamma"),
+            )
+        });
+        assert_eq!(late, Err(ManagerError::ShuttingDown));
     }
 }
