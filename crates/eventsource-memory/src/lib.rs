@@ -9,6 +9,7 @@ pub mod checkpoint;
 pub mod dead_letter;
 pub mod lock;
 pub mod outbox;
+pub mod readmodel;
 pub mod snapshot;
 pub mod store;
 
@@ -17,5 +18,6 @@ pub use checkpoint::InMemoryCheckpointStore;
 pub use dead_letter::InMemoryDeadLetterStore;
 pub use lock::InMemoryLockStore;
 pub use outbox::InMemoryOutboxStore;
+pub use readmodel::InMemoryReadModelStore;
 pub use snapshot::InMemorySnapshotStore;
 pub use store::InMemoryEventStore;

@@ -18,6 +18,8 @@ pub mod live;
 pub mod lock;
 pub mod outbox;
 pub mod position;
+pub mod projection;
+pub mod readmodel;
 pub mod registry;
 pub mod repository;
 pub mod snapshot;
@@ -40,7 +42,7 @@ pub use envelope::{
 };
 pub use error::{
     AtomicAppendError, BusError, CheckpointError, DeadLetterError, DecodeError, OutboxError,
-    RepositoryError, StoreError, SubscriptionError,
+    ReadModelError, RepositoryError, StoreError, SubscriptionError,
 };
 pub use event::{DomainEvent, EventMeta, EventRecord};
 pub use ids::{AggregateId, CausationId, CorrelationId, EventId, TenantId};
@@ -51,6 +53,8 @@ pub use outbox::{
     OutboxStore, RelayReport, relay,
 };
 pub use position::Position;
+pub use projection::{ProjectionSink, Projector, ReadModelChange, ReadView};
+pub use readmodel::ReadModelStore;
 pub use registry::EventRegistry;
 pub use repository::{AggregateRepository, CommandContext};
 pub use store::{AggregateStore, GlobalFeed};

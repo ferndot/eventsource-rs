@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS locks (
     owner      TEXT    NOT NULL,
     expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS readmodels (
+    model    TEXT NOT NULL,
+    id       TEXT NOT NULL,
+    document TEXT NOT NULL,
+    PRIMARY KEY (model, id)
+);
 CREATE TABLE IF NOT EXISTS dead_letters (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     subscription   TEXT    NOT NULL,

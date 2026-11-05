@@ -1,4 +1,5 @@
 //! `SQLite` adapters for `eventsource-core`: durable event store, checkpoint store, snapshot store, dead-letter store and outbox.
+//! `SQLite` adapters for `eventsource-core`: durable event store, checkpoint store, snapshot store, dead-letter store and read model store.
 //!
 //! The crate implements the core ports and nothing in core knows about it.
 //! `SQLite` is bundled, so no system library is required.
@@ -9,6 +10,7 @@ pub mod dead_letter;
 pub mod error;
 pub mod lock;
 pub mod outbox;
+pub mod readmodel;
 pub mod snapshot;
 pub mod store;
 
@@ -17,5 +19,6 @@ pub use dead_letter::SqliteDeadLetterStore;
 pub use error::SqliteError;
 pub use lock::SqliteLockStore;
 pub use outbox::SqliteOutboxStore;
+pub use readmodel::SqliteReadModelStore;
 pub use snapshot::SqliteSnapshotStore;
 pub use store::SqliteEventStore;

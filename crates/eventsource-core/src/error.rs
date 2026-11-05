@@ -166,6 +166,14 @@ pub enum AtomicAppendError {
     Outbox(#[from] OutboxError),
 }
 
+/// Error from a read model store.
+#[derive(Debug, thiserror::Error)]
+pub enum ReadModelError {
+    /// The backend failed. The cause is available through `source()`.
+    #[error("read model backend failed")]
+    Backend(#[source] BackendError),
+}
+
 /// Error from a snapshot store. Callers treat every variant as "no usable snapshot".
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {

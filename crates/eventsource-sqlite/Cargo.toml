@@ -14,6 +14,7 @@ thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+eventsource-memory = { path = "../eventsource-memory" }
 eventsource-testing = { path = "../eventsource-testing" }
 futures.workspace = true
 rusqlite.workspace = true
