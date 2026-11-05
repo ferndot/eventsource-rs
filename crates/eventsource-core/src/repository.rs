@@ -8,6 +8,10 @@ use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+
 use crate::aggregate::AggregateRoot;
 use crate::clock::{Clock, SystemClock};
 use crate::decider::Decider;
@@ -15,6 +19,7 @@ use crate::envelope::{AppendResult, StreamReadOptions};
 use crate::error::{RepositoryError, StoreError, StreamIdError};
 use crate::event::{EventMeta, EventRecord};
 use crate::ids::{AggregateId, CausationId, CorrelationId, EventId, TenantId};
+use crate::snapshot::{NoSnapshots, SnapshotPolicy, SnapshotStore};
 use crate::store::AggregateStore;
 use crate::stream_id::{Category, StreamId};
 use crate::version::{ExpectedVersion, Version};
@@ -49,14 +54,28 @@ impl CommandContext {
     }
 }
 
+/// Snapshot wiring for a repository: the store, when to write, and how to
+/// (de)serialize `D::State`. The codec is captured as function pointers when
+/// snapshots are enabled, so only snapshotting repositories need a
+/// serializable state.
+struct SnapshotConfig<D: Decider, N> {
+    store: N,
+    policy: SnapshotPolicy,
+    encode: fn(&D::State) -> Result<Value, serde_json::Error>,
+    decode: fn(Value) -> Result<D::State, serde_json::Error>,
+}
+
 /// Loads, saves, and executes one aggregate type `D`.
 ///
-/// Statically dispatched over the store. The store is the only place that
-/// decides whether a save wins.
-pub struct AggregateRepository<D: Decider, S> {
+/// Statically dispatched over the event store `S` and, when enabled with
+/// [`Self::with_snapshots`], the snapshot store `N`. The event store is the
+/// only place that decides whether a save wins. Snapshots are an optimisation:
+/// a missing, unreadable, or mismatched snapshot means a full replay.
+pub struct AggregateRepository<D: Decider, S, N = NoSnapshots> {
     store: S,
     clock: Arc<dyn Clock>,
     category: Category,
+    snapshots: Option<SnapshotConfig<D, N>>,
     _decider: PhantomData<fn() -> D>,
 }
 
@@ -74,10 +93,43 @@ where
             store,
             clock: Arc::new(SystemClock),
             category: Category::new(D::AGGREGATE_TYPE)?,
+            snapshots: None,
             _decider: PhantomData,
         })
     }
 
+    /// Turns on snapshots: loads start from the latest usable snapshot in
+    /// `snapshots`, and saves write one whenever `policy` says a boundary was crossed.
+    #[must_use]
+    pub fn with_snapshots<N: SnapshotStore>(
+        self,
+        snapshots: N,
+        policy: SnapshotPolicy,
+    ) -> AggregateRepository<D, S, N>
+    where
+        D::State: Serialize + DeserializeOwned,
+    {
+        AggregateRepository {
+            store: self.store,
+            clock: self.clock,
+            category: self.category,
+            snapshots: Some(SnapshotConfig {
+                store: snapshots,
+                policy,
+                encode: |state| serde_json::to_value(state),
+                decode: |value| serde_json::from_value(value),
+            }),
+            _decider: PhantomData,
+        }
+    }
+}
+
+impl<D, S, N> AggregateRepository<D, S, N>
+where
+    D: Decider,
+    S: AggregateStore,
+    N: SnapshotStore,
+{
     /// Replaces the clock used to stamp `occurred_at`. Tests use this for fixed times.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
@@ -104,17 +156,25 @@ where
         id: AggregateId,
     ) -> Result<Option<AggregateRoot<D>>, RepositoryError<D::Error>> {
         let stream = self.stream(id);
-        let envelopes = self
-            .store
-            .read_stream(&stream, StreamReadOptions::default())
-            .await?;
+        let (mut aggregate, loaded) = match self.read_snapshot(id, &stream).await? {
+            Some(aggregate) => {
+                let version = aggregate.committed_version();
+                (aggregate, version)
+            }
+            None => (AggregateRoot::new(id), Version::ZERO),
+        };
+        let options = StreamReadOptions {
+            from: (loaded > Version::ZERO).then(|| loaded.next()),
+            ..StreamReadOptions::default()
+        };
+        let envelopes = self.store.read_stream(&stream, options).await?;
         if envelopes.is_empty() {
-            return Ok(None);
+            return Ok((loaded > Version::ZERO).then_some(aggregate));
         }
 
         let mut events = Vec::with_capacity(envelopes.len());
         for (index, envelope) in envelopes.iter().enumerate() {
-            let expected = u64::try_from(index).unwrap_or(u64::MAX) + 1;
+            let expected = loaded.get() + u64::try_from(index).unwrap_or(u64::MAX) + 1;
             if envelope.stream != stream {
                 return Err(RepositoryError::CorruptStream {
                     stream,
@@ -133,9 +193,37 @@ where
             events.push(envelope.record.decode::<D::Event>()?);
         }
 
-        let mut aggregate = AggregateRoot::new(id);
         aggregate.load_from_history(events);
         Ok(Some(aggregate))
+    }
+
+    /// The aggregate as of the stored snapshot, or `None` if there is none.
+    async fn read_snapshot(
+        &self,
+        id: AggregateId,
+        stream: &StreamId,
+    ) -> Result<Option<AggregateRoot<D>>, RepositoryError<D::Error>> {
+        let Some(config) = &self.snapshots else {
+            return Ok(None);
+        };
+        let loaded = config
+            .store
+            .load(stream)
+            .await
+            .map_err(|e| StoreError::Backend(Box::new(e)))?;
+        let Some(snapshot) = loaded else {
+            return Ok(None);
+        };
+        let state =
+            (config.decode)(snapshot.state).map_err(|e| RepositoryError::CorruptStream {
+                stream: stream.clone(),
+                detail: format!("snapshot state: {e}"),
+            })?;
+        Ok(Some(AggregateRoot::from_snapshot(
+            id,
+            snapshot.version,
+            state,
+        )))
     }
 
     /// Loads an aggregate, or a new empty one if none exists.

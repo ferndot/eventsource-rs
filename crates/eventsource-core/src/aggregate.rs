@@ -41,6 +41,16 @@ impl<D: Decider> AggregateRoot<D> {
         }
     }
 
+    /// An aggregate restored from a snapshot: `state` already reflects events `1..=version`.
+    pub(crate) fn from_snapshot(id: AggregateId, version: Version, state: D::State) -> Self {
+        Self {
+            id,
+            committed: version,
+            state,
+            uncommitted: Vec::new(),
+        }
+    }
+
     /// The aggregate's id.
     #[must_use]
     pub const fn id(&self) -> AggregateId {

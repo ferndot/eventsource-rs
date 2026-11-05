@@ -64,6 +64,22 @@ impl<T: SnapshotStore> SnapshotStore for Arc<T> {
     }
 }
 
+/// The snapshot store of a repository that has snapshots turned off.
+///
+/// It stores nothing and never has a snapshot to load.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoSnapshots;
+
+impl SnapshotStore for NoSnapshots {
+    async fn save(&self, _snapshot: Snapshot) -> Result<(), SnapshotError> {
+        Ok(())
+    }
+
+    async fn load(&self, _stream: &StreamId) -> Result<Option<Snapshot>, SnapshotError> {
+        Ok(None)
+    }
+}
+
 /// When to write a snapshot: every `n` events.
 ///
 /// A value object. It can only be built with a non-zero interval.
