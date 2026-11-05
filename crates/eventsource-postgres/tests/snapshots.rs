@@ -158,8 +158,16 @@ async fn repo(
     schema: &str,
 ) -> AggregateRepository<Counter, Arc<PostgresEventStore>, Arc<PostgresSnapshotStore>> {
     let url = common::database_url();
-    let events = Arc::new(PostgresEventStore::open(&url, schema).await.expect("event store"));
-    let snapshots = Arc::new(PostgresSnapshotStore::open(&url, schema).await.expect("snapshot store"));
+    let events = Arc::new(
+        PostgresEventStore::open(&url, schema)
+            .await
+            .expect("event store"),
+    );
+    let snapshots = Arc::new(
+        PostgresSnapshotStore::open(&url, schema)
+            .await
+            .expect("snapshot store"),
+    );
     AggregateRepository::<Counter, _>::new(events)
         .expect("repository")
         .with_snapshots(

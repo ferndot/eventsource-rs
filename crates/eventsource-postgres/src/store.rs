@@ -7,7 +7,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use futures::lock::{Mutex, MutexGuard};
 use tokio_postgres::error::SqlState;
 use tokio_postgres::types::ToSql;
-use tokio_postgres::{Client, Row};
+use tokio_postgres::{Client, Row, Transaction};
 
 use eventsource_core::envelope::{
     AppendResult, EventEnvelope, FeedReadOptions, ReadDirection, StreamReadOptions,
@@ -79,6 +79,35 @@ impl PostgresEventStore {
         Ok(Position::new(self.store_id.clone(), token))
     }
 
+    /// One writer per schema at a time, until the transaction ends. This makes the
+    /// version check and the insert one atomic step, and it makes positions (taken
+    /// from a sequence) become visible in order, so a feed reader never skips an
+    /// event that commits late.
+    async fn lock_writers(tx: &Transaction<'_>) -> Result<(), PostgresError> {
+        tx.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended('eventsource:append:' || current_schema(), 0))",
+            &[],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The time to stamp new events with. It never decreases: clamp to the newest stored value.
+    async fn next_stored_at(tx: &Transaction<'_>) -> Result<DateTime<Utc>, PostgresError> {
+        let newest: Option<String> = tx
+            .query_opt(
+                "SELECT stored_at FROM events ORDER BY position DESC LIMIT 1",
+                &[],
+            )
+            .await?
+            .map(|row| row.get(0));
+        let mut stored_at = Utc::now();
+        if let Some(newest) = newest {
+            stored_at = stored_at.max(parse_time(&newest, "stored_at")?);
+        }
+        Ok(stored_at)
+    }
+
     async fn append_inner(
         &self,
         stream: &StreamId,
@@ -96,16 +125,7 @@ impl PostgresEventStore {
 
         let mut client = self.lock().await;
         let tx = client.transaction().await.map_err(PostgresError::from)?;
-        // One writer per schema at a time, until commit. This makes the version
-        // check and the insert one atomic step, and it makes positions (taken
-        // from a sequence) become visible in order, so a feed reader never
-        // skips an event that commits late.
-        tx.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended('eventsource:append:' || current_schema(), 0))",
-            &[],
-        )
-        .await
-        .map_err(PostgresError::from)?;
+        Self::lock_writers(&tx).await?;
 
         let current = tx
             .query_opt(
@@ -124,18 +144,7 @@ impl PostgresEventStore {
             .into());
         }
 
-        let newest: Option<String> = tx
-            .query_opt(
-                "SELECT stored_at FROM events ORDER BY position DESC LIMIT 1",
-                &[],
-            )
-            .await
-            .map_err(PostgresError::from)?
-            .map(|row| row.get(0));
-        let mut stored_at = Utc::now();
-        if let Some(newest) = newest {
-            stored_at = stored_at.max(parse_time(&newest, "stored_at")?);
-        }
+        let stored_at = Self::next_stored_at(&tx).await?;
         let stored_at_text = format_time(stored_at);
 
         let new_version = current.advance(events.len() as u64);
@@ -218,7 +227,10 @@ impl PostgresEventStore {
     ) -> Result<Vec<EventEnvelope>, StoreError> {
         let rows = {
             let client = self.lock().await;
-            client.query(sql, params).await.map_err(PostgresError::from)?
+            client
+                .query(sql, params)
+                .await
+                .map_err(PostgresError::from)?
         };
         let envelopes = rows
             .iter()

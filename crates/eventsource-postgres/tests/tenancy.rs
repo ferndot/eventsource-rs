@@ -80,9 +80,11 @@ async fn tenant_isolation_holds_across_reopen() {
     let ctx = CommandContext::new();
 
     {
-        let store: Store = Arc::new(PostgresEventStore::open(&common::database_url(), &schema)
+        let store: Store = Arc::new(
+            PostgresEventStore::open(&common::database_url(), &schema)
                 .await
-                .expect("open"));
+                .expect("open"),
+        );
         repo(&store, a).execute(id, Add(1), &ctx).await.expect("a1");
         repo(&store, b)
             .execute(id, Add(10), &ctx)
@@ -91,9 +93,11 @@ async fn tenant_isolation_holds_across_reopen() {
         repo(&store, a).execute(id, Add(2), &ctx).await.expect("a2");
     }
 
-    let store: Store = Arc::new(PostgresEventStore::open(&common::database_url(), &schema)
+    let store: Store = Arc::new(
+        PostgresEventStore::open(&common::database_url(), &schema)
             .await
-            .expect("reopen"));
+            .expect("reopen"),
+    );
     let seen_by_a = repo(&store, a).load(id).await.expect("a loads");
     let seen_by_b = repo(&store, b).load(id).await.expect("b loads");
     assert_eq!((seen_by_a.state().sum, seen_by_a.version().get()), (3, 2));

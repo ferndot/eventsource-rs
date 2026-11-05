@@ -122,7 +122,10 @@ impl PostgresDeadLetterStore {
             .client
             .lock()
             .await
-            .execute("DELETE FROM dead_letters WHERE id = $1", &[&to_i64(id.get())])
+            .execute(
+                "DELETE FROM dead_letters WHERE id = $1",
+                &[&to_i64(id.get())],
+            )
             .await?;
         Ok(removed > 0)
     }

@@ -48,8 +48,8 @@ impl PostgresCheckpointStore {
         let processed: i64 = row.get(3);
         let position = match (store, token) {
             (Some(store), Some(token)) => {
-                let token =
-                    u64::try_from(token).map_err(|e| PostgresError::corrupt("position_token", e))?;
+                let token = u64::try_from(token)
+                    .map_err(|e| PostgresError::corrupt("position_token", e))?;
                 Some(Position::new(store, token))
             }
             (None, None) => None,

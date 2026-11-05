@@ -72,7 +72,8 @@ fn message_from_row(row: &Row) -> Result<OutboxMessage, PostgresError> {
             u64::try_from(row.get::<_, i64>("id")).map_err(|e| PostgresError::corrupt("id", e))?,
         ),
         destination: row.get("destination"),
-        payload: serde_json::from_str(&payload).map_err(|e| PostgresError::corrupt("payload", e))?,
+        payload: serde_json::from_str(&payload)
+            .map_err(|e| PostgresError::corrupt("payload", e))?,
         stream: stream
             .map(|text| text.parse::<StreamId>())
             .transpose()

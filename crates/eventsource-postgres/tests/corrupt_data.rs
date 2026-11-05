@@ -43,7 +43,11 @@ fn order_stream() -> StreamId {
 
 /// Runs raw SQL against the schema, bypassing the store and its foreign keys.
 async fn tamper(schema: &str, sql: &str) {
-    common::tamper(schema, &format!("SET session_replication_role = replica; {sql}")).await;
+    common::tamper(
+        schema,
+        &format!("SET session_replication_role = replica; {sql}"),
+    )
+    .await;
 }
 
 async fn open(schema: &str) -> PostgresEventStore {
@@ -114,9 +118,7 @@ async fn stored_event_type_missing_from_the_registry_is_reported() {
             .await
             .expect("append");
     }
-    let store = open(&schema)
-        .await
-        .with_registry(registry());
+    let store = open(&schema).await.with_registry(registry());
 
     let by_stream = store
         .read_stream(&stream, StreamReadOptions::default())

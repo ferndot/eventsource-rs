@@ -177,7 +177,11 @@ async fn postgres_projection_matches_the_in_memory_projection() {
     // On one PostgreSQL schema: events, checkpoints and read models together.
     let schema = common::fresh_schema();
     let url = common::database_url();
-    let events = Arc::new(PostgresEventStore::open(&url, &schema).await.expect("events"));
+    let events = Arc::new(
+        PostgresEventStore::open(&url, &schema)
+            .await
+            .expect("events"),
+    );
     let models = Arc::new(open(&schema).await);
     let checkpoints = Arc::new(
         PostgresCheckpointStore::open(&url, &schema)

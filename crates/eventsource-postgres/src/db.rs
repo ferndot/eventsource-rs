@@ -88,7 +88,11 @@ CREATE TABLE IF NOT EXISTS dead_letters (
 /// Initialisation runs under a database-wide advisory lock, because concurrent
 /// `CREATE ... IF NOT EXISTS` statements can otherwise collide in the catalog.
 pub(crate) async fn connect(url: &str, schema: &str) -> Result<Client, PostgresError> {
-    if schema.is_empty() || !schema.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+    if schema.is_empty()
+        || !schema
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
         return Err(PostgresError::InvalidSchema(schema.to_owned()));
     }
     let (client, connection) = tokio_postgres::connect(url, NoTls).await?;

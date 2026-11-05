@@ -89,7 +89,10 @@ impl ReadModelStore for PostgresReadModelStore {
                     model,
                     id,
                     document,
-                } => tx.execute(UPSERT, &[model, id, &document.to_string()]).await,
+                } => {
+                    tx.execute(UPSERT, &[model, id, &document.to_string()])
+                        .await
+                }
                 ReadModelChange::Delete { model, id } => tx.execute(DELETE, &[model, id]).await,
             }
             .map_err(PostgresError::from)?;

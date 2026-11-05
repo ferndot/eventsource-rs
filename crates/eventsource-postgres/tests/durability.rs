@@ -94,7 +94,10 @@ async fn handles_on_one_schema_share_positions() {
 
 #[tokio::test]
 async fn schemas_are_isolated_from_each_other() {
-    let (first, second) = (open(&common::fresh_schema()).await, open(&common::fresh_schema()).await);
+    let (first, second) = (
+        open(&common::fresh_schema()).await,
+        open(&common::fresh_schema()).await,
+    );
     first
         .append(&order_stream(), vec![record("A")], ExpectedVersion::Any)
         .await
