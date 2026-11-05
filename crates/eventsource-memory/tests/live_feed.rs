@@ -77,3 +77,41 @@ async fn several_appends_are_yielded_in_order_with_their_positions() {
     }
     assert_eq!(tokens, [2, 3, 4, 5, 6]);
 }
+
+#[tokio::test]
+async fn dropping_one_stream_does_not_break_another_or_later_appends() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let mut kept = Arc::clone(&store).subscribe_live();
+    let abandoned = Arc::clone(&store).subscribe_live();
+
+    append(&store, 1).await;
+    drop(abandoned);
+    append(&store, 1).await;
+
+    for expected in [1, 2] {
+        let event = tokio::time::timeout(WAIT, kept.next())
+            .await
+            .expect("event arrives")
+            .expect("stream open");
+        assert_eq!(event.position.token(), expected);
+    }
+}
+
+#[tokio::test]
+async fn an_idle_live_stream_stays_pending_after_catching_up() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let mut live = Arc::clone(&store).subscribe_live();
+    append(&store, 1).await;
+    tokio::time::timeout(WAIT, live.next())
+        .await
+        .expect("event arrives");
+
+    // Caught up: neither ends nor yields, and does not spin.
+    let mut polls = 0_u32;
+    let idle = std::future::poll_fn(|cx| {
+        polls += 1;
+        live.poll_next_unpin(cx).map(|_| ())
+    });
+    assert!(tokio::time::timeout(IDLE, idle).await.is_err());
+    assert!(polls <= 3, "idle stream was polled {polls} times");
+}
