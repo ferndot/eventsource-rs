@@ -4,6 +4,7 @@
 //! to [`SqliteError`] to tell a database failure from corrupt stored data.
 
 use eventsource_core::error::{CheckpointError, DeadLetterError, SnapshotError, StoreError};
+use eventsource_core::lock::LockError;
 
 /// What went wrong inside the `SQLite` adapters.
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +55,12 @@ impl From<SqliteError> for CheckpointError {
 }
 
 impl From<SqliteError> for DeadLetterError {
+    fn from(error: SqliteError) -> Self {
+        Self::Backend(Box::new(error))
+    }
+}
+
+impl From<SqliteError> for LockError {
     fn from(error: SqliteError) -> Self {
         Self::Backend(Box::new(error))
     }

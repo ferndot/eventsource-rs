@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS snapshots (
     state          TEXT    NOT NULL,
     created_at     TEXT    NOT NULL
 );
+CREATE TABLE IF NOT EXISTS locks (
+    name       TEXT PRIMARY KEY,
+    owner      TEXT    NOT NULL,
+    expires_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dead_letters (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     subscription   TEXT    NOT NULL,

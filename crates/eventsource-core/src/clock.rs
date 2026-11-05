@@ -17,3 +17,9 @@ impl Clock for SystemClock {
         Utc::now()
     }
 }
+
+impl<C: Clock + ?Sized> Clock for std::sync::Arc<C> {
+    fn now(&self) -> DateTime<Utc> {
+        (**self).now()
+    }
+}

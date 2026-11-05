@@ -5,7 +5,10 @@
 //! returns a fresh, empty store. Each check runs against its own store, so
 //! checks cannot affect one another.
 
+mod clock;
 mod recording;
+
+pub use clock::ManualClock;
 
 pub use recording::{RecordedSpan, RecordedValue, RecordingSpan, RecordingTracer};
 
