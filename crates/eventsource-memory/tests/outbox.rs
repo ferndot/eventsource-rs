@@ -1,13 +1,13 @@
 //! Transactional outbox over in-memory adapters.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use eventsource_core::envelope::StreamReadOptions;
 use eventsource_core::error::{BackendError, OutboxError, RepositoryError};
 use eventsource_core::outbox::{
     NewOutboxMessage, OutboxMessage, OutboxPublisher, OutboxStore, relay,
 };
-use eventsource_core::store::{AggregateStore, GlobalFeed};
+use eventsource_core::store::AggregateStore;
 use eventsource_core::{
     AggregateId, AggregateRepository, Category, CommandContext, Decider, DomainEvent, StreamId,
     Version,
@@ -199,4 +199,55 @@ async fn failed_enqueue_leaves_the_event_stream_unchanged() {
         Version::ZERO
     );
     assert!(outbox.fetch_pending(10).await.expect("fetch").is_empty());
+}
+
+#[tokio::test]
+async fn atomic_append_stores_event_and_message_and_relay_delivers_it() {
+    let outbox = InMemoryOutboxStore::new();
+    let events = Arc::new(InMemoryEventStore::new().with_outbox(outbox.clone()));
+    let repo = AggregateRepository::<Counter, _>::new(events.clone()).expect("repo");
+    let id = AggregateId::new();
+
+    let appended = repo
+        .execute_with_outbox(id, 5, &CommandContext::new(), |record| {
+            NewOutboxMessage::new("counter-events", record.payload.clone())
+        })
+        .await
+        .expect("execute")
+        .expect("something was saved");
+    assert_eq!(appended.new_version, Version::new(1));
+
+    let stored = events
+        .read_stream(&counter_stream(id), StreamReadOptions::default())
+        .await
+        .expect("read");
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].record.event_type, "Added");
+
+    let pending = outbox.fetch_pending(10).await.expect("fetch");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].destination, "counter-events");
+    assert_eq!(pending[0].payload, stored[0].record.payload);
+    assert_eq!(pending[0].stream, Some(counter_stream(id)));
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let report = relay(&outbox, &CapturingPublisher(seen.clone()), 10)
+        .await
+        .expect("relay");
+    assert_eq!(report.published, 1);
+    assert_eq!(
+        *seen.lock().expect("lock"),
+        [stored[0].record.payload.clone()]
+    );
+    assert!(outbox.fetch_pending(10).await.expect("fetch").is_empty());
+}
+
+/// Captures the payloads it is asked to publish.
+struct CapturingPublisher(Arc<Mutex<Vec<serde_json::Value>>>);
+
+impl OutboxPublisher for CapturingPublisher {
+    async fn publish(&self, message: &OutboxMessage) -> Result<(), BackendError> {
+        self.0.lock().expect("lock").push(message.payload.clone());
+        Ok(())
+    }
 }

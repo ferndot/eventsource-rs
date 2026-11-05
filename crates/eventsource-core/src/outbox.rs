@@ -191,6 +191,18 @@ pub trait OutboxAppend: AggregateStore {
     ) -> impl Future<Output = Result<AppendResult, AtomicAppendError>> + Send;
 }
 
+impl<T: OutboxAppend> OutboxAppend for Arc<T> {
+    fn append_with_outbox(
+        &self,
+        stream: &StreamId,
+        events: Vec<EventRecord>,
+        expected: ExpectedVersion,
+        messages: Vec<NewOutboxMessage>,
+    ) -> impl Future<Output = Result<AppendResult, AtomicAppendError>> + Send {
+        (**self).append_with_outbox(stream, events, expected, messages)
+    }
+}
+
 /// Delivers outbox messages to their destination, for example a message bus.
 pub trait OutboxPublisher: Send + Sync {
     /// Delivers one message. `Ok` means the destination has accepted it.
