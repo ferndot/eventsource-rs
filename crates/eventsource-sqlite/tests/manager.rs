@@ -1,4 +1,4 @@
-//! A subscription manager over SQLite survives a restart: a new manager resumes from the saved checkpoint.
+//! A subscription manager over `SQLite` survives a restart: a new manager resumes from the saved checkpoint.
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, PoisonError};
