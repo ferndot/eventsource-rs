@@ -8,9 +8,11 @@
 //! (`NoTls`); each store handle owns one connection driven by a task on the
 //! current Tokio runtime, so stores must be opened from inside a runtime.
 
+pub mod checkpoint;
 mod db;
 pub mod error;
 pub mod store;
 
+pub use checkpoint::PostgresCheckpointStore;
 pub use error::PostgresError;
 pub use store::PostgresEventStore;

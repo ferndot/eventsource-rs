@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_category ON events (category, position);
 CREATE INDEX IF NOT EXISTS events_tenant ON events (tenant_id, position);
+CREATE TABLE IF NOT EXISTS checkpoints (
+    name             TEXT PRIMARY KEY,
+    position_store   TEXT,
+    position_token   BIGINT,
+    last_event_id    TEXT,
+    events_processed BIGINT NOT NULL
+);
 ";
 
 /// Opens a connection that works inside `schema`, creating the schema and tables if needed.
