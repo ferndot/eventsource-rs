@@ -58,8 +58,16 @@ impl<C: Clock> LockStore for InMemoryLockStore<C> {
         Ok(Some(LockLease::new(name.clone(), owner.clone(), expires_at)))
     }
 
-    async fn release(&self, _name: &LockName, _owner: &LockOwner) -> Result<bool, LockError> {
-        todo!("release")
+    async fn release(&self, name: &LockName, owner: &LockOwner) -> Result<bool, LockError> {
+        let now = self.clock.now();
+        let mut leases = self.leases.lock().unwrap_or_else(PoisonError::into_inner);
+        match leases.get(name.as_str()) {
+            Some((holder, until)) if holder == owner.as_str() && *until > now => {
+                leases.remove(name.as_str());
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     async fn renew(
