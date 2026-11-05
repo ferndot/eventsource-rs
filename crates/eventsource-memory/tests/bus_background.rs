@@ -61,3 +61,25 @@ async fn publish_background_returns_before_a_slow_handler_finishes() {
     .await
     .expect("handler finishes once released");
 }
+
+#[tokio::test]
+async fn flush_waits_for_background_delivery_and_handlers_see_envelopes_in_order() {
+    let seen: Arc<Mutex<Vec<u64>>> = Arc::default();
+    let bus = Arc::new(InMemoryEventBus::new());
+    let sink = Arc::clone(&seen);
+    bus.subscribe_all(handler(move |e: EventEnvelope| {
+        let sink = Arc::clone(&sink);
+        async move {
+            tokio::task::yield_now().await;
+            sink.lock().expect("lock").push(e.position.token());
+            Ok::<(), BackendError>(())
+        }
+    }));
+
+    bus.publish_background(vec![envelope(1), envelope(2), envelope(3)]);
+    tokio::time::timeout(WAIT, bus.flush())
+        .await
+        .expect("flushed");
+
+    assert_eq!(*seen.lock().expect("lock"), [1, 2, 3]);
+}

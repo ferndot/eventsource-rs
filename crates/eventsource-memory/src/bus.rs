@@ -10,6 +10,8 @@ use eventsource_core::envelope::EventEnvelope;
 use eventsource_core::error::BusError;
 use futures::FutureExt;
 
+use crate::background::BackgroundDelivery;
+
 /// Turns a caught panic payload into a readable message.
 fn panic_message(panic: &(dyn Any + Send)) -> String {
     let detail = panic
@@ -44,6 +46,7 @@ struct Subscription {
 pub struct InMemoryEventBus {
     next_id: AtomicU64,
     subscriptions: RwLock<Vec<Subscription>>,
+    background: BackgroundDelivery,
 }
 
 impl InMemoryEventBus {
@@ -114,7 +117,14 @@ impl InMemoryEventBus {
     /// Must be called inside a Tokio runtime.
     pub fn publish_background(self: &Arc<Self>, envelopes: Vec<EventEnvelope>) {
         let bus = Arc::clone(self);
-        tokio::spawn(async move { bus.deliver(&envelopes).await });
+        self.background.spawn(async move {
+            let _ = bus.deliver(&envelopes).await;
+        });
+    }
+
+    /// Waits until every background delivery started so far has finished.
+    pub async fn flush(&self) {
+        self.background.flush().await;
     }
 }
 

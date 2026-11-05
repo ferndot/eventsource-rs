@@ -4,6 +4,7 @@
 //! Nothing here persists across restarts. Use these for tests, examples, and
 //! single-process applications.
 
+mod background;
 pub mod bus;
 pub mod checkpoint;
 pub mod store;
