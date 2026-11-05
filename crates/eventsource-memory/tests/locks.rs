@@ -81,3 +81,36 @@ async fn release_by_owner_frees_the_lock_and_by_non_owner_does_nothing() {
     let again = locks.release(&name("never-held"), &owner("a")).await.expect("release");
     assert!(!again, "releasing an unheld lock is a no-op");
 }
+
+#[tokio::test]
+async fn another_owner_acquires_once_the_ttl_has_passed() {
+    let (locks, clock) = store();
+    locks
+        .try_acquire(&name("relay"), &owner("a"), ttl(30))
+        .await
+        .expect("acquire");
+
+    clock.advance(Duration::from_secs(29));
+    assert_eq!(
+        locks
+            .try_acquire(&name("relay"), &owner("b"), ttl(30))
+            .await
+            .expect("acquire"),
+        None,
+        "still live one second before expiry"
+    );
+
+    clock.advance(Duration::from_secs(1));
+    let lease = locks
+        .try_acquire(&name("relay"), &owner("b"), ttl(30))
+        .await
+        .expect("acquire")
+        .expect("expired lease no longer excludes");
+    assert_eq!(lease.owner(), &owner("b"));
+    assert_eq!(lease.expires_at(), clock.now() + Duration::from_secs(30));
+
+    assert!(
+        !locks.release(&name("relay"), &owner("a")).await.expect("release"),
+        "the old owner cannot release the new lease"
+    );
+}
