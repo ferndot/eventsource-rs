@@ -9,7 +9,14 @@ use eventsource_core::ids::{AggregateId, CorrelationId};
 use eventsource_core::position::Position;
 use eventsource_core::stream_id::{Category, StreamId};
 use eventsource_core::version::Version;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
+
+use eventsource_core::bus::handler;
+use eventsource_core::checkpoint::CheckpointStore;
 use eventsource_core::envelope::FeedReadOptions;
+use eventsource_core::subscription::{SubscriptionConfig, SubscriptionRunner};
+use eventsource_memory::{InMemoryCheckpointStore, InMemoryEventBus};
 use eventsource_core::error::StoreError;
 use eventsource_core::store::GlobalFeed;
 use eventsource_redis::{RedisBusConfig, RedisPublisher, RedisStreamReader};
@@ -171,4 +178,63 @@ async fn max_len_keeps_only_the_newest_entries() {
         .map(|e| e.record.meta.event_id.to_string())
         .collect();
     assert_eq!(kept, newest);
+}
+
+/// The checkpoint store is in-memory: a Redis checkpoint store is out of scope here.
+#[tokio::test]
+async fn subscription_runner_delivers_from_redis_and_checkpoints() {
+    let stream = unique_stream();
+    let publisher =
+        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let sent: Vec<_> = (1..=5).map(|n| envelope("Step", n)).collect();
+    publisher.publish(&sent).await.unwrap();
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let bus = InMemoryEventBus::new();
+    let sink = Arc::clone(&seen);
+    bus.subscribe_all(handler(move |e: EventEnvelope| {
+        let sink = Arc::clone(&sink);
+        async move {
+            sink.lock().unwrap().push(e.record.meta.event_id);
+            Ok(())
+        }
+    }));
+    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    let reader = Arc::new(RedisStreamReader::new(&redis_url(), stream.clone()).unwrap());
+    let mut config = SubscriptionConfig::new("redis-sub");
+    config.batch_size = NonZeroUsize::new(2).unwrap();
+
+    let mut runner = SubscriptionRunner::new(
+        Arc::clone(&reader),
+        Arc::clone(&checkpoints),
+        bus,
+        config.clone(),
+    );
+    let stats = runner.run_until_caught_up().await.unwrap();
+
+    let expected: Vec<_> = sent.iter().map(|e| e.record.meta.event_id).collect();
+    assert_eq!(*seen.lock().unwrap(), expected);
+    assert_eq!((stats.events_delivered, stats.batches), (5, 3));
+    let saved = checkpoints.load("redis-sub").await.unwrap().unwrap();
+    assert_eq!(saved.events_processed, 5);
+    assert_eq!(saved.last_event_id, expected.last().copied());
+    assert_eq!(saved.position, reader.current_position().await.unwrap());
+
+    // A new runner with the same checkpoint name resumes after the saved position.
+    let more: Vec<_> = (6..=7).map(|n| envelope("Step", n)).collect();
+    publisher.publish(&more).await.unwrap();
+    let again = Arc::new(Mutex::new(Vec::new()));
+    let bus = InMemoryEventBus::new();
+    let sink = Arc::clone(&again);
+    bus.subscribe_all(handler(move |e: EventEnvelope| {
+        let sink = Arc::clone(&sink);
+        async move {
+            sink.lock().unwrap().push(e.record.meta.event_id);
+            Ok(())
+        }
+    }));
+    let mut runner = SubscriptionRunner::new(reader, checkpoints, bus, config);
+    runner.run_until_caught_up().await.unwrap();
+    let expected_more: Vec<_> = more.iter().map(|e| e.record.meta.event_id).collect();
+    assert_eq!(*again.lock().unwrap(), expected_more);
 }
