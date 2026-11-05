@@ -1,12 +1,14 @@
 //! Dead-letter queue: a permanently failing event is parked and the runner moves on.
 
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eventsource_core::bus::handler;
 use eventsource_core::dead_letter::DeadLetterStore;
-use eventsource_core::error::BackendError;
+use eventsource_core::checkpoint::CheckpointStore;
+use eventsource_core::error::{BackendError, SubscriptionError};
 use eventsource_core::store::AggregateStore;
 use eventsource_core::{
     AggregateId, Category, EventEnvelope, ExpectedVersion, RetryPolicy, StreamId,
@@ -84,4 +86,94 @@ async fn permanent_failure_is_parked_and_later_events_are_delivered() {
     assert_eq!(seen.iter().filter(|n| *n == "Last").count(), 1);
     assert_eq!(seen.iter().filter(|n| *n == "Poison").count(), 3);
     assert_eq!(stats.events_delivered, 3, "parked events count as consumed");
+}
+
+#[tokio::test]
+async fn checkpoint_advances_past_the_parked_event() {
+    let store = Arc::new(InMemoryEventStore::new());
+    append_events(&store, &["First", "Poison", "Last"]).await;
+    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    let dead_letters = Arc::new(InMemoryDeadLetterStore::new());
+    let (bus, _seen) = bus_failing_on("Poison");
+    let mut config = SubscriptionConfig::new("orders");
+    config.retry = fast_retry(2);
+    SubscriptionRunner::new(
+        Arc::clone(&store),
+        Arc::clone(&checkpoints),
+        bus,
+        config.clone(),
+    )
+    .with_dead_letters(Arc::clone(&dead_letters))
+    .run_until_caught_up()
+    .await
+    .expect("first run");
+
+    let saved = checkpoints.load("orders").await.expect("load");
+    assert_eq!(saved.map(|c| c.events_processed), Some(3));
+
+    let (restart_bus, restart_seen) = bus_failing_on("Poison");
+    SubscriptionRunner::new(store, checkpoints, restart_bus, config)
+        .with_dead_letters(Arc::clone(&dead_letters))
+        .run_until_caught_up()
+        .await
+        .expect("restart");
+    assert!(
+        restart_seen.lock().expect("lock").is_empty(),
+        "nothing is redelivered after restart"
+    );
+    assert_eq!(dead_letters.list("orders").await.expect("list").len(), 1);
+}
+
+#[tokio::test]
+async fn without_a_dead_letter_store_a_permanent_failure_stops_the_subscription() {
+    let store = Arc::new(InMemoryEventStore::new());
+    append_events(&store, &["First", "Poison", "Last"]).await;
+    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    let (bus, seen) = bus_failing_on("Poison");
+    let mut config = SubscriptionConfig::new("orders");
+    config.retry = fast_retry(3);
+    let mut runner = SubscriptionRunner::new(store, Arc::clone(&checkpoints), bus, config);
+
+    let result = runner.run_until_caught_up().await;
+
+    assert!(matches!(
+        result,
+        Err(SubscriptionError::Handler { attempts: 3, .. })
+    ));
+    assert_eq!(checkpoints.load("orders").await.expect("load"), None);
+    // The bus runs a whole page on each attempt, so the page is retried as a unit.
+    let seen = seen.lock().expect("lock").clone();
+    assert_eq!(seen.iter().filter(|n| *n == "Poison").count(), 3);
+}
+
+#[tokio::test]
+async fn transient_failure_within_the_retry_budget_is_not_parked() {
+    let store = Arc::new(InMemoryEventStore::new());
+    append_events(&store, &["Flaky", "Last"]).await;
+    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    let dead_letters = Arc::new(InMemoryDeadLetterStore::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bus = Arc::new(InMemoryEventBus::new());
+    let counter = Arc::clone(&calls);
+    bus.subscribe_all(handler(move |envelope: EventEnvelope| {
+        let counter = Arc::clone(&counter);
+        async move {
+            if envelope.record.event_type == "Flaky" && counter.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                Err::<(), BackendError>("flaky".into())
+            } else {
+                Ok(())
+            }
+        }
+    }));
+    let mut config = SubscriptionConfig::new("orders");
+    config.retry = fast_retry(3);
+    let mut runner = SubscriptionRunner::new(store, checkpoints, bus, config)
+        .with_dead_letters(Arc::clone(&dead_letters));
+
+    let stats = runner.run_until_caught_up().await.expect("run");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "failed once, then retried");
+    assert!(dead_letters.list("orders").await.expect("list").is_empty());
+    assert_eq!(stats.events_delivered, 2);
 }
