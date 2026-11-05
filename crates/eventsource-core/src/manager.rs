@@ -306,6 +306,18 @@ impl ManagerDriver {
     }
 }
 
+/// The error and its causes on one line, e.g. `outer: inner`.
+fn describe(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut cause = error.source();
+    while let Some(inner) = cause {
+        text.push_str(": ");
+        text.push_str(&inner.to_string());
+        cause = inner.source();
+    }
+    text
+}
+
 /// Resolves once `control` is no longer [`Control::Run`], or its sender is gone.
 fn stop_signal(mut control: watch::Receiver<Control>) -> BoxFuture<'static, ()> {
     Box::pin(async move {
@@ -328,9 +340,16 @@ async fn drive(
         match wanted {
             Control::Run => {
                 status.send_replace(SubscriptionStatus::Running);
-                let _ = factory(stop_signal(control.clone())).await;
-                if *control.borrow() == Control::Run {
-                    return;
+                match factory(stop_signal(control.clone())).await {
+                    Ok(_) if *control.borrow() == Control::Run => return,
+                    Ok(_) => {}
+                    Err(error) => {
+                        status.send_replace(SubscriptionStatus::Failed(describe(&error)));
+                        // Stay failed until someone changes what the subscription should do.
+                        if control.changed().await.is_err() {
+                            return;
+                        }
+                    }
                 }
             }
             Control::Shutdown => {
@@ -622,5 +641,45 @@ mod tests {
             )
         });
         assert_eq!(late, Err(ManagerError::ShuttingDown));
+    }
+
+    #[tokio::test]
+    async fn failing_handler_marks_only_that_subscription_failed() {
+        let (manager, driver) = SubscriptionManager::new();
+        let driver = tokio::spawn(driver.run());
+        let feed = Feed::default();
+        feed.append(2);
+        let checkpoints = Checkpoints::default();
+        let broken = Sink {
+            fail_with: Some("boom: disk on fire"),
+            ..Sink::default()
+        };
+        let healthy = Sink::default();
+        register(&manager, "broken", &feed, &checkpoints, &broken);
+        register(&manager, "healthy", &feed, &checkpoints, &healthy);
+
+        let status = eventually(|| match manager.status("broken") {
+            Ok(status @ SubscriptionStatus::Failed(_)) => Some(status),
+            _ => None,
+        })
+        .await;
+        let SubscriptionStatus::Failed(text) = status else {
+            unreachable!()
+        };
+        assert!(
+            text.contains("boom: disk on fire"),
+            "error text was {text:?}"
+        );
+        assert!(broken.tokens().is_empty());
+        assert_eq!(
+            checkpoints.get("broken"),
+            None,
+            "failed page is not checkpointed"
+        );
+
+        feed.append(2);
+        eventually(|| (healthy.tokens() == [1, 2, 3, 4]).then_some(())).await;
+        assert_eq!(manager.status("healthy"), Ok(SubscriptionStatus::Running));
+        driver.abort();
     }
 }
