@@ -57,3 +57,23 @@ async fn a_live_stream_yields_an_event_appended_from_another_task() {
         .expect("stream open");
     assert_eq!(event.position.token(), 1);
 }
+
+#[tokio::test]
+async fn several_appends_are_yielded_in_order_with_their_positions() {
+    let store = Arc::new(InMemoryEventStore::new());
+    append(&store, 1).await; // history
+    let mut live = Arc::clone(&store).subscribe_live();
+
+    append(&store, 3).await;
+    append(&store, 2).await;
+
+    let mut tokens = Vec::new();
+    while tokens.len() < 5 {
+        let event = tokio::time::timeout(WAIT, live.next())
+            .await
+            .expect("event arrives")
+            .expect("stream open");
+        tokens.push(event.position.token());
+    }
+    assert_eq!(tokens, [2, 3, 4, 5, 6]);
+}
