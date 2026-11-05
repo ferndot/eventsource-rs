@@ -57,3 +57,28 @@ async fn publish_appends_envelope_to_configured_stream() {
     let payload: serde_json::Value = serde_json::from_str(&get("payload")).unwrap();
     assert_eq!(payload, env.record.payload);
 }
+
+#[tokio::test]
+async fn publish_preserves_order_across_batches() {
+    let stream = unique_stream();
+    let publisher =
+        RedisPublisher::new(&redis_url(), RedisBusConfig::new(stream.clone())).unwrap();
+    let first: Vec<_> = (1..=5).map(|n| envelope("Step", n)).collect();
+    let second: Vec<_> = (6..=8).map(|n| envelope("Step", n)).collect();
+
+    publisher.publish(&first).await.unwrap();
+    publisher.publish(&second).await.unwrap();
+
+    let expected: Vec<String> = first
+        .iter()
+        .chain(&second)
+        .map(|e| e.record.meta.event_id.to_string())
+        .collect();
+    let actual: Vec<String> = raw_entries(&stream)
+        .await
+        .ids
+        .iter()
+        .map(|e| e.get("event_id").unwrap())
+        .collect();
+    assert_eq!(actual, expected);
+}
