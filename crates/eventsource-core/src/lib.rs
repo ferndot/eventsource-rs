@@ -44,6 +44,7 @@ pub use error::{
 pub use event::{DomainEvent, EventMeta, EventRecord};
 pub use ids::{AggregateId, CausationId, CorrelationId, EventId, TenantId};
 pub use live::LiveFeed;
+pub use lock::{LockError, LockLease, LockName, LockOwner, LockStore, LockTtl, LockValueError};
 pub use position::Position;
 pub use registry::EventRegistry;
 pub use repository::{AggregateRepository, CommandContext};

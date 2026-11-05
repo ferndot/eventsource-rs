@@ -4,7 +4,12 @@
 //! until the lock is released or its lease expires, so a crashed holder cannot
 //! block the work forever.
 
+use std::future::Future;
 use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+
+use crate::error::BackendError;
 
 /// Why a lock value was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -89,6 +94,88 @@ impl LockTtl {
     pub fn get(self) -> Duration {
         self.0
     }
+}
+
+/// A granted claim on a lock, valid until `expires_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockLease {
+    name: LockName,
+    owner: LockOwner,
+    expires_at: DateTime<Utc>,
+}
+
+impl LockLease {
+    /// A lease of `name` held by `owner` until `expires_at`.
+    #[must_use]
+    pub fn new(name: LockName, owner: LockOwner, expires_at: DateTime<Utc>) -> Self {
+        Self {
+            name,
+            owner,
+            expires_at,
+        }
+    }
+
+    /// The locked name.
+    #[must_use]
+    pub fn name(&self) -> &LockName {
+        &self.name
+    }
+
+    /// Who holds the lock.
+    #[must_use]
+    pub fn owner(&self) -> &LockOwner {
+        &self.owner
+    }
+
+    /// The instant after which the lease no longer excludes others.
+    #[must_use]
+    pub fn expires_at(&self) -> DateTime<Utc> {
+        self.expires_at
+    }
+}
+
+/// Error from a lock store.
+#[derive(Debug, thiserror::Error)]
+pub enum LockError {
+    /// The backend failed. The cause is available through `source()`.
+    #[error("lock backend failed")]
+    Backend(#[source] BackendError),
+}
+
+/// Exclusive, expiring claims on named resources.
+///
+/// A lease whose expiry is at or before the store's clock time no longer
+/// excludes anyone. Refusals are values (`None` / `false`), not errors.
+pub trait LockStore: Send + Sync {
+    /// Claims `name` for `owner` for `ttl`.
+    ///
+    /// `Ok(None)` means another owner holds a live lease. If `owner` already
+    /// holds it, the lease is extended, as with [`LockStore::renew`].
+    fn try_acquire(
+        &self,
+        name: &LockName,
+        owner: &LockOwner,
+        ttl: LockTtl,
+    ) -> impl Future<Output = Result<Option<LockLease>, LockError>> + Send;
+
+    /// Releases `name` if `owner` holds it live. Returns whether it was released;
+    /// a non-owner changes nothing.
+    fn release(
+        &self,
+        name: &LockName,
+        owner: &LockOwner,
+    ) -> impl Future<Output = Result<bool, LockError>> + Send;
+
+    /// Extends the live lease of `owner` on `name` to `now + ttl`.
+    ///
+    /// `Ok(None)` means `owner` does not hold a live lease (never held it, lost
+    /// it to expiry, or someone else holds it).
+    fn renew(
+        &self,
+        name: &LockName,
+        owner: &LockOwner,
+        ttl: LockTtl,
+    ) -> impl Future<Output = Result<Option<LockLease>, LockError>> + Send;
 }
 
 #[cfg(test)]
