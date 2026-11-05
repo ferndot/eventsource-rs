@@ -108,7 +108,7 @@ impl SnapshotPolicy {
     /// Whether `version` is a snapshot boundary. Version zero never is.
     #[must_use]
     pub const fn is_due(self, version: Version) -> bool {
-        version.get() > 0 && version.get() % self.every.get() == 0
+        version.get() > 0 && version.get().is_multiple_of(self.every.get())
     }
 
     /// Whether a save that moved a stream from `from` to `to` stepped on or over a boundary.

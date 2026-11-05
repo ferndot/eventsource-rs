@@ -45,6 +45,13 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     last_event_id    TEXT,
     events_processed INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS snapshots (
+    stream_id      TEXT PRIMARY KEY,
+    version        INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL,
+    state          TEXT    NOT NULL,
+    created_at     TEXT    NOT NULL
+);
 ";
 
 /// Opens `path`, creating the file and schema if needed.
