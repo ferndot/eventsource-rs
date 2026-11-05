@@ -171,3 +171,59 @@ async fn different_stream_keys_keep_order_within_each_key() {
         assert!(mine.iter().all(|d| d.partition == mine[0].partition));
     }
 }
+
+#[tokio::test]
+async fn uncommitted_records_are_redelivered_to_a_restarted_consumer() {
+    let topic = create_topic(1).await;
+    let group = unique_group();
+    let sent: Vec<_> = (1..=3)
+        .map(|n| envelope_in(&new_stream(), "OrderPlaced", n))
+        .collect();
+    publisher(&topic).publish(&sent).await.unwrap();
+    let expected: Vec<_> = sent.iter().map(|e| e.record.meta.event_id).collect();
+
+    let first = consumer(&topic, &group);
+    let seen = collect(&first, sent.len()).await;
+    assert_eq!(seen.len(), 3);
+    drop(first); // "crashes" without committing
+
+    let second = consumer(&topic, &group);
+    let again = collect(&second, sent.len()).await;
+    let ids: Vec<_> = again
+        .iter()
+        .map(|d| d.envelope.record.meta.event_id)
+        .collect();
+    assert_eq!(ids, expected);
+}
+
+#[tokio::test]
+async fn committed_records_are_not_redelivered_but_later_ones_are() {
+    let topic = create_topic(1).await;
+    let group = unique_group();
+    let sent: Vec<_> = (1..=3)
+        .map(|n| envelope_in(&new_stream(), "OrderPlaced", n))
+        .collect();
+    publisher(&topic).publish(&sent).await.unwrap();
+
+    let first = consumer(&topic, &group);
+    let seen = collect(&first, sent.len()).await;
+    first.commit(&seen[..2]).await.unwrap(); // handled the first two only
+    drop(first);
+
+    let second = consumer(&topic, &group);
+    let again = collect(&second, 1).await;
+    assert_eq!(again.len(), 1);
+    assert_eq!(
+        again[0].envelope.record.meta.event_id,
+        sent[2].record.meta.event_id
+    );
+    let more = second
+        .poll_batch(batch(10), Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert!(
+        more.is_empty(),
+        "committed records came back: {}",
+        more.len()
+    );
+}

@@ -1,6 +1,8 @@
 //! Consumer side: reads envelopes back from a Kafka topic.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -8,8 +10,9 @@ use eventsource_core::envelope::EventEnvelope;
 use eventsource_core::position::Position;
 use rdkafka::Message;
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::error::KafkaError;
+use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use tokio::time::Instant;
 
 use crate::config::KafkaConsumerConfig;
@@ -42,7 +45,8 @@ pub enum ConsumeError {
 
 /// Reads the envelopes a [`crate::KafkaPublisher`] wrote to one topic, as a member of a consumer group.
 pub struct KafkaConsumer {
-    consumer: StreamConsumer,
+    consumer: Arc<StreamConsumer>,
+    topic: String,
     store_id: String,
     next_token: AtomicU64,
 }
@@ -61,7 +65,8 @@ impl KafkaConsumer {
             .create()?;
         consumer.subscribe(&[config.topic.as_str()])?;
         Ok(Self {
-            consumer,
+            consumer: Arc::new(consumer),
+            topic: config.topic.clone(),
             store_id: format!("kafka:{}:{}", config.topic, config.group_id),
             next_token: AtomicU64::new(1),
         })
@@ -98,5 +103,31 @@ impl KafkaConsumer {
             });
         }
         Ok(out)
+    }
+
+    /// Commits the offsets of `deliveries`: for each partition, everything up to and including the highest offset given.
+    ///
+    /// Call this only after the deliveries were handled. Anything not committed is read again by the next
+    /// consumer of the group, so delivery is at-least-once. Waits for the broker to acknowledge.
+    ///
+    /// # Errors
+    /// If the commit fails. Nothing is then known to be committed.
+    pub async fn commit(&self, deliveries: &[Delivery]) -> Result<(), KafkaError> {
+        let mut next: BTreeMap<i32, i64> = BTreeMap::new();
+        for delivery in deliveries {
+            let slot = next.entry(delivery.partition).or_insert(0);
+            *slot = (*slot).max(delivery.offset + 1);
+        }
+        if next.is_empty() {
+            return Ok(());
+        }
+        let mut list = TopicPartitionList::new();
+        for (partition, offset) in next {
+            list.add_partition_offset(&self.topic, partition, Offset::Offset(offset))?;
+        }
+        let consumer = Arc::clone(&self.consumer);
+        tokio::task::spawn_blocking(move || consumer.commit(&list, CommitMode::Sync))
+            .await
+            .map_err(|_| KafkaError::Canceled)?
     }
 }
