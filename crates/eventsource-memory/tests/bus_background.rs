@@ -124,3 +124,33 @@ async fn taking_background_failures_drains_them() {
     assert_eq!(bus.take_background_failures().len(), 1);
     assert!(bus.take_background_failures().is_empty());
 }
+
+#[tokio::test]
+async fn inline_publish_still_waits_for_a_slow_handler() {
+    use eventsource_core::bus::EventPublisher;
+
+    let gate = Arc::new(Notify::new());
+    let bus = Arc::new(InMemoryEventBus::new());
+    let waiter = Arc::clone(&gate);
+    bus.subscribe_all(handler(move |_e: EventEnvelope| {
+        let waiter = Arc::clone(&waiter);
+        async move {
+            waiter.notified().await;
+            Ok::<(), BackendError>(())
+        }
+    }));
+
+    let events = [envelope(1)];
+    let mut publish = std::pin::pin!(bus.publish(&events));
+    let early = tokio::time::timeout(Duration::from_millis(50), &mut publish).await;
+    assert!(
+        early.is_err(),
+        "publish must not complete while the handler blocks"
+    );
+
+    gate.notify_one();
+    tokio::time::timeout(WAIT, publish)
+        .await
+        .expect("completes once released")
+        .expect("handlers succeed");
+}
