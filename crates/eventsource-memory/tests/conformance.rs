@@ -59,3 +59,19 @@ impl DomainEvent for OrderEvent {
         "OrderPlaced"
     }
 }
+
+#[tokio::test]
+async fn check_count_matches_the_number_of_stores_run_all_requests() {
+    // Backends that must open stores up front (postgres) size their pool from
+    // CHECK_COUNT, so it has to equal the number of factory calls.
+    let made = std::sync::atomic::AtomicUsize::new(0);
+    eventsource_testing::run_all(|| {
+        made.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        InMemoryEventStore::new()
+    })
+    .await;
+    assert_eq!(
+        made.load(std::sync::atomic::Ordering::SeqCst),
+        eventsource_testing::CHECK_COUNT
+    );
+}

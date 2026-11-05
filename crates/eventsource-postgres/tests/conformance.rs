@@ -8,9 +8,8 @@ use eventsource_postgres::PostgresEventStore;
 async fn postgres_store_passes_conformance() {
     // The sync factory needs the store opened ahead of time, so build a pool of
     // fresh stores up front: one per conformance check.
-    const CHECKS: usize = 11;
     let mut stores = Vec::new();
-    for _ in 0..CHECKS {
+    for _ in 0..eventsource_testing::CHECK_COUNT {
         stores.push(
             PostgresEventStore::open(&common::database_url(), &common::fresh_schema())
                 .await
