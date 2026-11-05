@@ -99,3 +99,26 @@ async fn envelopes_arrive_in_publish_order() {
     consumer.close().await.unwrap();
     cleanup(&config).await;
 }
+
+#[tokio::test]
+async fn binding_receives_only_the_bound_event_type() {
+    let mut config = unique_config();
+    config.bindings = vec!["OrderPlaced".to_owned()];
+    let consumer = RabbitMqConsumer::connect(&amqp_url(), config.clone()).await.unwrap();
+    let publisher = RabbitMqPublisher::new(&amqp_url(), config.clone());
+    let sent = [
+        envelope("OrderPlaced", 1),
+        envelope("OrderShipped", 2),
+        envelope("OrderPlaced", 3),
+    ];
+
+    publisher.publish(&sent).await.unwrap();
+
+    let got = consumer.read_all(None, page(100)).await.unwrap();
+    let ids: Vec<_> = got.iter().map(|e| e.record.meta.event_id).collect();
+    assert_eq!(ids, vec![sent[0].record.meta.event_id, sent[2].record.meta.event_id]);
+    assert!(got.iter().all(|e| e.record.event_type == "OrderPlaced"));
+
+    consumer.close().await.unwrap();
+    cleanup(&config).await;
+}
