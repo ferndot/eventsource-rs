@@ -122,3 +122,50 @@ async fn binding_receives_only_the_bound_event_type() {
     consumer.close().await.unwrap();
     cleanup(&config).await;
 }
+
+#[tokio::test]
+async fn unacknowledged_message_is_redelivered_after_reconnect() {
+    let config = unique_config();
+    let first = RabbitMqConsumer::connect(&amqp_url(), config.clone()).await.unwrap();
+    let publisher = RabbitMqPublisher::new(&amqp_url(), config.clone());
+    let sent = envelope("OrderPlaced", 1);
+    publisher.publish(std::slice::from_ref(&sent)).await.unwrap();
+
+    // Read it but never acknowledge: the cursor never moves past it.
+    let got = first.read_all(None, page(10)).await.unwrap();
+    assert_eq!(got.len(), 1);
+    first.close().await.unwrap();
+
+    let second = RabbitMqConsumer::connect(&amqp_url(), config.clone()).await.unwrap();
+    let again = second.read_all(None, page(10)).await.unwrap();
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].record.meta.event_id, sent.record.meta.event_id);
+
+    second.close().await.unwrap();
+    cleanup(&config).await;
+}
+
+#[tokio::test]
+async fn message_is_acknowledged_once_the_cursor_moves_past_it() {
+    let config = unique_config();
+    let first = RabbitMqConsumer::connect(&amqp_url(), config.clone()).await.unwrap();
+    let publisher = RabbitMqPublisher::new(&amqp_url(), config.clone());
+    let sent: Vec<_> = (1..=3).map(|n| envelope("Step", n)).collect();
+    publisher.publish(&sent).await.unwrap();
+
+    let got = first.read_all(None, page(2)).await.unwrap();
+    assert_eq!(got.len(), 2);
+    // Reading on from the second event's position acknowledges the first two.
+    let rest = first.read_all(Some(&got[1].position), page(2)).await.unwrap();
+    assert_eq!(rest.len(), 1);
+    first.close().await.unwrap();
+
+    // Only the third, never acknowledged, comes back.
+    let second = RabbitMqConsumer::connect(&amqp_url(), config.clone()).await.unwrap();
+    let again = second.read_all(None, page(10)).await.unwrap();
+    let ids: Vec<_> = again.iter().map(|e| e.record.meta.event_id).collect();
+    assert_eq!(ids, vec![sent[2].record.meta.event_id]);
+
+    second.close().await.unwrap();
+    cleanup(&config).await;
+}
