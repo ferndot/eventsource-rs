@@ -16,9 +16,10 @@ use crate::aggregate::AggregateRoot;
 use crate::clock::{Clock, SystemClock};
 use crate::decider::Decider;
 use crate::envelope::{AppendResult, EventEnvelope, StreamReadOptions};
-use crate::error::{RepositoryError, StoreError, StreamIdError};
+use crate::error::{AtomicAppendError, RepositoryError, StoreError, StreamIdError};
 use crate::event::{EventMeta, EventRecord};
 use crate::ids::{AggregateId, CausationId, CorrelationId, EventId, TenantId};
+use crate::outbox::{NewOutboxMessage, OutboxAppend};
 use crate::snapshot::{NoSnapshots, Snapshot, SnapshotPolicy, SnapshotStore};
 use crate::store::AggregateStore;
 use crate::stream_id::{Category, StreamId};
@@ -287,25 +288,43 @@ where
         &self,
         aggregate: &mut AggregateRoot<D>,
     ) -> Result<Option<AppendResult>, RepositoryError<D::Error>> {
-        if aggregate.uncommitted_events().is_empty() {
+        let Some(records) = Self::pending_records(aggregate)? else {
             return Ok(None);
-        }
-        let records = aggregate
-            .uncommitted_events()
-            .iter()
-            .map(|pending| EventRecord::from_event(&pending.event, pending.meta.clone()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(RepositoryError::Encode)?;
-
+        };
         let previous = aggregate.committed_version();
         let expected = ExpectedVersion::Exact(previous);
         let result = self
             .store
             .append(&self.stream(aggregate.id()), records, expected)
             .await?;
-        aggregate.mark_committed();
-        self.write_snapshot(aggregate, previous).await?;
+        self.committed(aggregate, previous).await?;
         Ok(Some(result))
+    }
+
+    /// The aggregate's uncommitted events as records, or `None` if there are none.
+    fn pending_records(
+        aggregate: &AggregateRoot<D>,
+    ) -> Result<Option<Vec<EventRecord>>, RepositoryError<D::Error>> {
+        if aggregate.uncommitted_events().is_empty() {
+            return Ok(None);
+        }
+        aggregate
+            .uncommitted_events()
+            .iter()
+            .map(|pending| EventRecord::from_event(&pending.event, pending.meta.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+            .map_err(RepositoryError::Encode)
+    }
+
+    /// Bookkeeping after the events of a save are stored.
+    async fn committed(
+        &self,
+        aggregate: &mut AggregateRoot<D>,
+        previous: Version,
+    ) -> Result<(), RepositoryError<D::Error>> {
+        aggregate.mark_committed();
+        self.write_snapshot(aggregate, previous).await
     }
 
     /// Snapshots `aggregate` if the save that took it from `previous` crossed a policy boundary.
@@ -416,5 +435,63 @@ where
             .execute(command, &mut stamp)
             .map(|_| ())
             .map_err(RepositoryError::Domain)
+    }
+}
+
+impl<D, S, N> AggregateRepository<D, S, N>
+where
+    D: Decider,
+    S: OutboxAppend,
+    N: SnapshotStore,
+{
+    /// Like [`Self::save`], but also enqueues one outbox message per event, in the same atomic step.
+    ///
+    /// `to_message` is called once for each event, in order. If any message is
+    /// rejected or cannot be stored, no event is stored either and the
+    /// aggregate keeps its uncommitted events, so the save can be retried.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Outbox`] if a message was rejected, otherwise as [`Self::save`].
+    pub async fn save_with_outbox(
+        &self,
+        aggregate: &mut AggregateRoot<D>,
+        to_message: impl Fn(&EventRecord) -> NewOutboxMessage + Send,
+    ) -> Result<Option<AppendResult>, RepositoryError<D::Error>> {
+        let Some(records) = Self::pending_records(aggregate)? else {
+            return Ok(None);
+        };
+        let stream = self.stream(aggregate.id());
+        let messages = records
+            .iter()
+            .map(|record| to_message(record).for_stream(stream.clone()))
+            .collect();
+        let previous = aggregate.committed_version();
+        let expected = ExpectedVersion::Exact(previous);
+        let result = self
+            .store
+            .append_with_outbox(&stream, records, expected, messages)
+            .await
+            .map_err(|error| match error {
+                AtomicAppendError::Store(error) => RepositoryError::Store(error),
+                AtomicAppendError::Outbox(error) => RepositoryError::Outbox(error),
+            })?;
+        self.committed(aggregate, previous).await?;
+        Ok(Some(result))
+    }
+
+    /// Like [`Self::execute`], but saves with [`Self::save_with_outbox`].
+    ///
+    /// # Errors
+    /// [`RepositoryError::Domain`] if the decider rejects the command, otherwise as [`Self::save_with_outbox`].
+    pub async fn execute_with_outbox(
+        &self,
+        id: AggregateId,
+        command: D::Command,
+        context: &CommandContext,
+        to_message: impl Fn(&EventRecord) -> NewOutboxMessage + Send,
+    ) -> Result<Option<AppendResult>, RepositoryError<D::Error>> {
+        let mut aggregate = self.load_or_new(id).await?;
+        self.run(&mut aggregate, command, context)?;
+        self.save_with_outbox(&mut aggregate, to_message).await
     }
 }

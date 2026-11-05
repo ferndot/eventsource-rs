@@ -1,6 +1,6 @@
 //! In-memory outbox store.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use eventsource_core::error::OutboxError;
 use eventsource_core::outbox::{
@@ -8,7 +8,7 @@ use eventsource_core::outbox::{
 };
 
 #[derive(Default)]
-struct State {
+pub(crate) struct State {
     next_id: u64,
     messages: Vec<OutboxMessage>,
 }
@@ -21,7 +21,28 @@ pub struct InMemoryOutboxStore {
     state: Arc<Mutex<State>>,
 }
 
+impl State {
+    pub(crate) fn push(&mut self, message: NewOutboxMessage) -> OutboxId {
+        self.next_id += 1;
+        let id = OutboxId::new(self.next_id);
+        self.messages.push(OutboxMessage {
+            id,
+            destination: message.destination,
+            payload: message.payload,
+            stream: message.stream,
+            attempts: 0,
+            status: OutboxStatus::Pending,
+        });
+        id
+    }
+}
+
 impl InMemoryOutboxStore {
+    /// The messages, locked. Callers must not hold the guard across an `.await`.
+    pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// An empty store.
     #[must_use]
     pub fn new() -> Self {
@@ -31,18 +52,8 @@ impl InMemoryOutboxStore {
 
 impl OutboxStore for InMemoryOutboxStore {
     async fn enqueue(&self, message: NewOutboxMessage) -> Result<OutboxId, OutboxError> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.next_id += 1;
-        let id = OutboxId::new(state.next_id);
-        state.messages.push(OutboxMessage {
-            id,
-            destination: message.destination,
-            payload: message.payload,
-            stream: message.stream,
-            attempts: 0,
-            status: OutboxStatus::Pending,
-        });
-        Ok(id)
+        message.validate()?;
+        Ok(self.lock().push(message))
     }
 
     async fn fetch_pending(&self, limit: usize) -> Result<Vec<OutboxMessage>, OutboxError> {

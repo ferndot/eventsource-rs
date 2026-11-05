@@ -10,8 +10,12 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::error::{BackendError, OutboxError};
+use crate::envelope::AppendResult;
+use crate::error::{AtomicAppendError, BackendError, OutboxError};
+use crate::event::EventRecord;
+use crate::store::AggregateStore;
 use crate::stream_id::StreamId;
+use crate::version::ExpectedVersion;
 
 /// Identifies one outbox message. Stores assign these, in enqueue order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -67,6 +71,19 @@ impl NewOutboxMessage {
     pub fn for_stream(mut self, stream: StreamId) -> Self {
         self.stream = Some(stream);
         self
+    }
+}
+
+impl NewOutboxMessage {
+    /// Checks the message is storable. Stores call this before writing.
+    ///
+    /// # Errors
+    /// [`OutboxError::Invalid`] if the destination is blank.
+    pub fn validate(&self) -> Result<(), OutboxError> {
+        if self.destination.trim().is_empty() {
+            return Err(OutboxError::Invalid("destination is empty".to_owned()));
+        }
+        Ok(())
     }
 }
 
@@ -153,6 +170,25 @@ impl<T: OutboxStore> OutboxStore for Arc<T> {
     ) -> impl Future<Output = Result<(), OutboxError>> + Send {
         (**self).mark_failed(id, error)
     }
+}
+
+/// An event store that can append events and outbox messages as one unit.
+pub trait OutboxAppend: AggregateStore {
+    /// Appends `events` to `stream` and enqueues `messages`, atomically.
+    ///
+    /// Either the events and every message are stored, or nothing is. This is
+    /// what lets a relay publish exactly the events that were committed.
+    ///
+    /// # Errors
+    /// [`AtomicAppendError::Store`] as for [`AggregateStore::append`];
+    /// [`AtomicAppendError::Outbox`] if a message is invalid or cannot be stored.
+    fn append_with_outbox(
+        &self,
+        stream: &StreamId,
+        events: Vec<EventRecord>,
+        expected: ExpectedVersion,
+        messages: Vec<NewOutboxMessage>,
+    ) -> impl Future<Output = Result<AppendResult, AtomicAppendError>> + Send;
 }
 
 /// Delivers outbox messages to their destination, for example a message bus.

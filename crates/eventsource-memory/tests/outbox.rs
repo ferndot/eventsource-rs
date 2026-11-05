@@ -2,12 +2,71 @@
 
 use std::sync::Mutex;
 
-use eventsource_core::error::BackendError;
+use eventsource_core::envelope::StreamReadOptions;
+use eventsource_core::error::{BackendError, OutboxError, RepositoryError};
 use eventsource_core::outbox::{
     NewOutboxMessage, OutboxMessage, OutboxPublisher, OutboxStore, relay,
 };
-use eventsource_memory::InMemoryOutboxStore;
+use eventsource_core::store::{AggregateStore, GlobalFeed};
+use eventsource_core::{
+    AggregateId, AggregateRepository, Category, CommandContext, Decider, DomainEvent, StreamId,
+    Version,
+};
+use eventsource_memory::{InMemoryEventStore, InMemoryOutboxStore};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+enum CounterEvent {
+    Added(u64),
+}
+
+impl DomainEvent for CounterEvent {
+    fn event_types() -> &'static [&'static str] {
+        &["Added"]
+    }
+
+    fn event_type(&self) -> &'static str {
+        "Added"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct CounterState {
+    sum: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("never rejected")]
+struct Never;
+
+struct Counter;
+
+impl Decider for Counter {
+    type Command = u64;
+    type Event = CounterEvent;
+    type State = CounterState;
+    type Error = Never;
+
+    const AGGREGATE_TYPE: &'static str = "Counter";
+
+    fn initial_state() -> CounterState {
+        CounterState { sum: 0 }
+    }
+
+    fn decide(_: &CounterState, amount: u64) -> Result<Vec<CounterEvent>, Never> {
+        Ok(vec![CounterEvent::Added(amount)])
+    }
+
+    fn evolve(state: &CounterState, event: &CounterEvent) -> CounterState {
+        let CounterEvent::Added(n) = event;
+        CounterState { sum: state.sum + n }
+    }
+}
+
+fn counter_stream(id: AggregateId) -> StreamId {
+    StreamId::new(id, Category::new("Counter").expect("category"))
+}
 
 /// Records what it was asked to publish.
 #[derive(Default)]
@@ -115,4 +174,29 @@ async fn publisher_failure_keeps_message_pending_with_attempt_counted() {
     let report = relay(&outbox, &publisher, 10).await.expect("relay");
     assert_eq!(report.published, 2);
     assert_eq!(publisher.seen(), [1, 2]);
+}
+
+#[tokio::test]
+async fn failed_enqueue_leaves_the_event_stream_unchanged() {
+    let outbox = InMemoryOutboxStore::new();
+    let events = InMemoryEventStore::new().with_outbox(outbox.clone());
+    let repo = AggregateRepository::<Counter, _>::new(events).expect("repo");
+    let id = AggregateId::new();
+
+    // An empty destination is rejected by the outbox, after the events were prepared.
+    let result = repo
+        .execute_with_outbox(id, 5, &CommandContext::new(), |_| {
+            NewOutboxMessage::new("", json!({}))
+        })
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(RepositoryError::Outbox(OutboxError::Invalid(_)))
+    ));
+    assert_eq!(
+        repo.stored_version(id).await.expect("version"),
+        Version::ZERO
+    );
+    assert!(outbox.fetch_pending(10).await.expect("fetch").is_empty());
 }
