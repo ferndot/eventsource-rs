@@ -5,6 +5,7 @@ members = [
     "crates/eventsource-memory",
     "crates/eventsource-sqlite",
     "crates/eventsource-testing",
+    "crates/eventsource-testkit",
 ]
 
 [workspace.package]
