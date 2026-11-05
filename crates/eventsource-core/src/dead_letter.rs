@@ -72,7 +72,6 @@ pub trait DeadLetterStore: Send + Sync {
         subscription: &str,
     ) -> impl Future<Output = Result<Vec<ParkedEvent>, DeadLetterError>> + Send;
 
-
     /// Removes an entry. Returns whether it existed.
     ///
     /// # Errors

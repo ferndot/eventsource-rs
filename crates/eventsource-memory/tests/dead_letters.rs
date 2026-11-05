@@ -6,10 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eventsource_core::bus::handler;
-use eventsource_core::dead_letter::{DeadLetterEntry, DeadLetterStore, RetryParkedError, retry_parked};
 use eventsource_core::checkpoint::CheckpointStore;
-use eventsource_core::error::{BackendError, SubscriptionError};
+use eventsource_core::dead_letter::{
+    DeadLetterEntry, DeadLetterStore, RetryParkedError, retry_parked,
+};
 use eventsource_core::envelope::FeedReadOptions;
+use eventsource_core::error::{BackendError, SubscriptionError};
 use eventsource_core::store::{AggregateStore, GlobalFeed};
 use eventsource_core::{
     AggregateId, Category, EventEnvelope, ExpectedVersion, RetryPolicy, StreamId,
@@ -31,7 +33,10 @@ fn fast_retry(attempts: u32) -> RetryPolicy {
 /// Appends one event per name, each in its own stream, in order.
 async fn append_events(store: &InMemoryEventStore, names: &[&str]) {
     for name in names {
-        let stream = StreamId::new(AggregateId::new(), Category::new("Order").expect("category"));
+        let stream = StreamId::new(
+            AggregateId::new(),
+            Category::new("Order").expect("category"),
+        );
         store
             .append(&stream, vec![record(name)], ExpectedVersion::NoStream)
             .await
@@ -202,8 +207,14 @@ async fn entry(subscription: &str, name: &str) -> DeadLetterEntry {
 #[tokio::test]
 async fn memory_store_parks_lists_by_subscription_and_removes() {
     let store = InMemoryDeadLetterStore::new();
-    let a = store.park(entry("orders", "A").await).await.expect("park a");
-    let b = store.park(entry("orders", "B").await).await.expect("park b");
+    let a = store
+        .park(entry("orders", "A").await)
+        .await
+        .expect("park a");
+    let b = store
+        .park(entry("orders", "B").await)
+        .await
+        .expect("park b");
     store
         .park(entry("billing", "C").await)
         .await

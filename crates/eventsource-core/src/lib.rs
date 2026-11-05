@@ -28,13 +28,16 @@ pub use aggregate::AggregateRoot;
 pub use bus::{EventPublisher, Handler, NoPublisher, SubscriptionId};
 pub use checkpoint::{Checkpoint, CheckpointStore};
 pub use clock::{Clock, SystemClock};
-pub use dead_letter::{DeadLetterEntry, DeadLetterId, DeadLetterStore, ParkedEvent, RetryParkedError, retry_parked};
+pub use dead_letter::{
+    DeadLetterEntry, DeadLetterId, DeadLetterStore, ParkedEvent, RetryParkedError, retry_parked,
+};
 pub use decider::Decider;
 pub use envelope::{
     AppendResult, EventEnvelope, FeedReadOptions, ReadDirection, StreamReadOptions,
 };
 pub use error::{
-    BusError, CheckpointError, DeadLetterError, DecodeError, RepositoryError, StoreError, SubscriptionError,
+    BusError, CheckpointError, DeadLetterError, DecodeError, RepositoryError, StoreError,
+    SubscriptionError,
 };
 pub use event::{DomainEvent, EventMeta, EventRecord};
 pub use ids::{AggregateId, CausationId, CorrelationId, EventId, TenantId};
