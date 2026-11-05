@@ -163,3 +163,32 @@ async fn a_feed_read_filtered_by_tenant_returns_only_that_tenants_events_in_posi
     let tokens: Vec<u64> = feed.iter().map(|e| e.position.token()).collect();
     assert_eq!(tokens, vec![1, 3, 5], "only tenant a's events, oldest first");
 }
+
+#[tokio::test]
+async fn an_unscoped_repository_keeps_its_streams_and_the_context_tenant() {
+    use eventsource_core::envelope::StreamReadOptions;
+    use eventsource_core::store::AggregateStore;
+    use eventsource_core::{Category, StreamId};
+
+    let store: Store = Arc::new(InMemoryEventStore::new());
+    let tenant = TenantId::new();
+    let id = AggregateId::new();
+    let mut ctx = CommandContext::new();
+    ctx.tenant_id = Some(tenant);
+
+    let unscoped: AggregateRepository<Counter, Store> =
+        AggregateRepository::new(Arc::clone(&store)).expect("repo");
+    unscoped.execute(id, Add(4), &ctx).await.expect("write");
+
+    // Same plain stream id as before tenancy existed.
+    let plain = StreamId::new(id, Category::new("Counter").expect("category"));
+    let events = store
+        .read_stream(&plain, StreamReadOptions::default())
+        .await
+        .expect("read");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].record.meta.tenant_id, Some(tenant));
+    assert_eq!(unscoped.load(id).await.expect("load").state().sum, 4);
+    // A scoped repository does not see unscoped history.
+    assert!(repo(&store, tenant).get(id).await.expect("get").is_none());
+}
