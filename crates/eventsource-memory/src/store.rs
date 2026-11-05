@@ -1,6 +1,6 @@
 //! In-process event store. Non-persistent; suitable for tests and single-process use.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -264,8 +264,60 @@ impl GlobalFeed for InMemoryEventStore {
     }
 }
 
+/// Max events read from the feed per wake-up while tailing.
+const LIVE_PAGE: NonZeroUsize = NonZeroUsize::MIN.saturating_add(255);
+
+/// Cursor state of one live stream.
+struct LiveTail {
+    store: Arc<InMemoryEventStore>,
+    wake: watch::Receiver<u64>,
+    after: Option<Position>,
+    buffered: VecDeque<EventEnvelope>,
+}
+
+impl LiveTail {
+    /// The next event after the cursor, waiting for appends. `None` ends the stream.
+    async fn next(&mut self) -> Option<EventEnvelope> {
+        loop {
+            if let Some(next) = self.buffered.pop_front() {
+                self.after = Some(next.position.clone());
+                return Some(next);
+            }
+            let options = FeedReadOptions {
+                limit: Some(LIVE_PAGE),
+                ..FeedReadOptions::default()
+            };
+            let page = self
+                .store
+                .read_all(self.after.as_ref(), options)
+                .await
+                .ok()?;
+            if page.is_empty() {
+                // Errs only if the sender is gone, which cannot happen while we hold the store.
+                self.wake.changed().await.ok()?;
+            } else {
+                self.buffered.extend(page);
+            }
+        }
+    }
+}
+
 impl LiveFeed for InMemoryEventStore {
+    /// Tails the feed from its current head, waking on the store's append signal.
     fn subscribe_live(self: Arc<Self>) -> BoxStream<'static, EventEnvelope> {
-        Box::pin(stream::pending())
+        // Subscribe to wake-ups before reading the head, so an append between
+        // the two shows up as a change instead of being missed.
+        let wake = self.wake();
+        let after = self.lock().events.last().map(|e| e.position.clone());
+        let tail = LiveTail {
+            store: self,
+            wake,
+            after,
+            buffered: VecDeque::new(),
+        };
+        Box::pin(stream::unfold(tail, |mut tail| async move {
+            let next = tail.next().await?;
+            Some((next, tail))
+        }))
     }
 }
